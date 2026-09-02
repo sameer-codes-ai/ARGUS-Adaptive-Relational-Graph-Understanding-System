@@ -1,0 +1,28 @@
+data:
+  train_manifest: "data/train.csv"
+  val_manifest: "data/val.csv"
+  test_manifest: "data/test.csv"
+  frames: 16
+  image_size: 96
+
+model:
+  image_size: 96
+  patch_size: 16
+  dim: 192
+  graph_dim: 128
+  max_objects: 12
+  temporal_layers: 3
+  heads: 4
+  keep_ratio: 0.5
+  memory_size: 16
+  sampling_threshold: 0.12
+  max_frame_gap: 4
+
+training:
+  batch_size: 4
+  epochs: 10
+  lr: 0.0001
+  weight_decay: 0.0001
+  smoothness_weight: 0.1
+  sparsity_weight: 0.01
+  output_dir: "outputs/checkpoints"

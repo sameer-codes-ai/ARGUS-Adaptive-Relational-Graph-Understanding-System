@@ -1,0 +1,24 @@
+# Python virtual environment & cache
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Documentation / research notes
+docs/
+01_literature_survey.md
+02_novelty_analysis.md
+03_research_design.md
+dataset_and_method_description.md
+introduction.md
+methodology.md
+
+# Checkpoints and output artifacts
+outputs/
+*.pt
+*.pth
+
+# OS files
+.DS_Store
+Thumbs.db
