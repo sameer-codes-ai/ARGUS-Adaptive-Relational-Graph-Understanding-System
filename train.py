@@ -81,6 +81,8 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, help='Batch size for training.')
     parser.add_argument('--lr', type=float, help='Learning rate.')
     parser.add_argument('--weight-decay', type=float, help='Weight decay for AdamW.')
+    parser.add_argument('--mil-weight', type=float, help='Weight for Multiple Instance Learning (MIL) ranking loss.')
+    parser.add_argument('--no-augment', action='store_true', help='Disable data augmentations.')
     parser.add_argument('--output-dir', type=Path, help='Output directory for checkpoints.')
     parser.add_argument('--max-batches', type=int, default=None, help='Max batches per epoch (for quick debug).')
     return parser.parse_args()
@@ -108,6 +110,8 @@ def load_config(args) -> dict:
     weight_decay = args.weight_decay or train_cfg.get('weight_decay', 1e-4)
     smoothness_weight = train_cfg.get('smoothness_weight', 0.1)
     sparsity_weight = train_cfg.get('sparsity_weight', 0.01)
+    mil_weight = args.mil_weight if args.mil_weight is not None else train_cfg.get('mil_weight', 0.5)
+    augment = not args.no_augment
     output_dir = args.output_dir or Path(train_cfg.get('output_dir', 'outputs/checkpoints'))
 
     return {
@@ -124,23 +128,25 @@ def load_config(args) -> dict:
         'weight_decay': weight_decay,
         'smoothness_weight': smoothness_weight,
         'sparsity_weight': sparsity_weight,
+        'mil_weight': mil_weight,
+        'augment': augment,
         'output_dir': output_dir,
         'max_batches': args.max_batches,
         'model_cfg': model_cfg,
     }
 
 
-def create_loader(manifest_path, synthetic, frames, image_size, batch_size, shuffle=True):
+def create_loader(manifest_path, synthetic, frames, image_size, batch_size, shuffle=True, augment=False):
     if synthetic:
-        ds = SyntheticSurveillance(count=48, frames=frames, size=image_size)
+        ds = SyntheticSurveillance(count=48, frames=frames, size=image_size, augment=augment)
     elif manifest_path:
-        ds = VideoManifest(manifest_path, frames=frames, image_size=image_size)
+        ds = VideoManifest(manifest_path, frames=frames, image_size=image_size, augment=augment)
     else:
         return None
     return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=0)
 
 
-def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity_w, epoch_idx, total_epochs, max_batches=None):
+def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None):
     model.train()
     total_loss, all_preds, all_labels = 0.0, [], []
     batch_count = 0
@@ -159,7 +165,12 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
     for frames, y in dataloader:
         frames, y = frames.to(device), y.to(device)
         out = model(frames)
-        loss, _ = anomaly_loss(out.scores, y, smoothness_weight=smoothness_w, sparsity_weight=sparsity_w)
+        loss, loss_dict = anomaly_loss(
+            out.scores, y,
+            smoothness_weight=smoothness_w,
+            sparsity_weight=sparsity_w,
+            mil_weight=mil_w
+        )
 
         optimizer.zero_grad()
         loss.backward()
@@ -177,11 +188,15 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
         pred_bin = (preds >= 0.5).long()
         batch_acc = (pred_bin == y.long()).float().mean().item()
 
-        pbar.set_postfix({
+        postfix_dict = {
             'loss': f"{loss.item():.4f}",
             'avg_loss': f"{current_avg_loss:.4f}",
             'acc': f"{batch_acc * 100:.1f}%",
-        })
+        }
+        if loss_dict.get('mil', 0.0) > 0.0:
+            postfix_dict['mil'] = f"{loss_dict['mil']:.3f}"
+
+        pbar.set_postfix(postfix_dict)
         pbar.update(1)
 
         if max_batches and batch_count >= max_batches:
@@ -196,7 +211,7 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
 
 
 @torch.no_grad()
-def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, epoch_idx, total_epochs, max_batches=None):
+def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None):
     model.eval()
     total_loss, all_preds, all_labels = 0.0, [], []
     batch_count = 0
@@ -215,7 +230,12 @@ def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, epoch_id
     for frames, y in dataloader:
         frames, y = frames.to(device), y.to(device)
         out = model(frames)
-        loss, _ = anomaly_loss(out.scores, y, smoothness_weight=smoothness_w, sparsity_weight=sparsity_w)
+        loss, _ = anomaly_loss(
+            out.scores, y,
+            smoothness_weight=smoothness_w,
+            sparsity_weight=sparsity_w,
+            mil_weight=mil_w
+        )
 
         total_loss += loss.item()
         preds = out.scores.max(dim=1).values.detach()
@@ -251,13 +271,9 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using compute device: {device.upper()}")
 
-    # Build model from config
-    model_config = ARGUSConfig.from_dict(cfg['model_cfg'])
-    model_config.image_size = cfg['image_size']
-    model = ARGUS(config=model_config).to(device)
-
     start_epoch = 1
     best_score = -1.0
+    checkpoint_data = None
 
     if cfg['resume']:
         checkpoint_path = Path(cfg['resume'])
@@ -268,6 +284,26 @@ def main():
             checkpoint_bytes = io.BytesIO(f.read())
         checkpoint_data = torch.load(checkpoint_bytes, map_location=device, weights_only=False)
 
+        # Restore architecture config directly from checkpoint if available
+        if isinstance(checkpoint_data, dict) and 'config' in checkpoint_data and checkpoint_data['config']:
+            model_config = ARGUSConfig.from_dict(checkpoint_data['config'])
+            # If CLI image_size was explicitly passed, override resolution
+            if args.image_size:
+                model_config.image_size = args.image_size
+            else:
+                cfg['image_size'] = model_config.image_size
+            print(f"  [*] Using architecture configuration from checkpoint: dim={model_config.dim}, layers={model_config.temporal_layers}, img_size={model_config.image_size}")
+        else:
+            model_config = ARGUSConfig.from_dict(cfg['model_cfg'])
+            model_config.image_size = cfg['image_size']
+    else:
+        # Build model from config file
+        model_config = ARGUSConfig.from_dict(cfg['model_cfg'])
+        model_config.image_size = cfg['image_size']
+
+    model = ARGUS(config=model_config).to(device)
+
+    if cfg['resume'] and checkpoint_data is not None:
         if isinstance(checkpoint_data, dict) and 'model' in checkpoint_data:
             model.load_state_dict(checkpoint_data['model'])
             start_epoch = checkpoint_data.get('epoch', 0) + 1
@@ -290,8 +326,14 @@ def main():
             except Exception as e:
                 print(f"  [!] Note: Reinitialized optimizer ({e}).")
 
-    train_loader = create_loader(cfg['manifest'], cfg['synthetic'], cfg['frames'], cfg['image_size'], cfg['batch_size'], shuffle=True)
-    val_loader = create_loader(cfg['val_manifest'], cfg['synthetic'], cfg['frames'], cfg['image_size'], cfg['batch_size'], shuffle=False) if (cfg['val_manifest'] or cfg['synthetic']) else None
+    train_loader = create_loader(
+        cfg['manifest'], cfg['synthetic'], cfg['frames'], cfg['image_size'],
+        cfg['batch_size'], shuffle=True, augment=cfg['augment']
+    )
+    val_loader = create_loader(
+        cfg['val_manifest'], cfg['synthetic'], cfg['frames'], cfg['image_size'],
+        cfg['batch_size'], shuffle=False, augment=False
+    ) if (cfg['val_manifest'] or cfg['synthetic']) else None
 
     total_epochs = start_epoch + cfg['epochs'] - 1
 
@@ -300,7 +342,7 @@ def main():
         print(f" | {len(val_loader.dataset)} val clips")
     else:
         print()
-    print(f"Training plan: Epochs {start_epoch} to {total_epochs} (+{cfg['epochs']} epochs) | batch size {cfg['batch_size']} | {cfg['frames']} frames/clip | {cfg['image_size']}x{cfg['image_size']} res\n")
+    print(f"Training plan: Epochs {start_epoch} to {total_epochs} (+{cfg['epochs']} epochs) | batch size {cfg['batch_size']} | {cfg['frames']} frames/clip | {cfg['image_size']}x{cfg['image_size']} res | MIL weight: {cfg['mil_weight']} | Augment: {cfg['augment']}\n")
 
     output_dir = Path(cfg['output_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -314,7 +356,7 @@ def main():
 
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, optimizer, device,
-            cfg['smoothness_weight'], cfg['sparsity_weight'],
+            cfg['smoothness_weight'], cfg['sparsity_weight'], cfg['mil_weight'],
             epoch, total_epochs, cfg['max_batches']
         )
         scheduler.step()
@@ -324,7 +366,7 @@ def main():
         if val_loader:
             val_loss, val_metrics = evaluate_epoch(
                 model, val_loader, device,
-                cfg['smoothness_weight'], cfg['sparsity_weight'],
+                cfg['smoothness_weight'], cfg['sparsity_weight'], cfg['mil_weight'],
                 epoch, total_epochs, cfg['max_batches']
             )
 

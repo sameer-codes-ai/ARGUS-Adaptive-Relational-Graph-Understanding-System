@@ -129,16 +129,42 @@ def load_clip_from_path(
     return clip
 
 
+def apply_augmentations(clip: torch.Tensor) -> torch.Tensor:
+    """
+    Apply real-time surveillance video augmentations:
+    - Random horizontal flip (p=0.5)
+    - Random brightness / contrast perturbation
+    """
+    # clip shape: (T, 3, H, W)
+    if torch.rand(1).item() < 0.5:
+        clip = torch.flip(clip, dims=[-1])
+
+    # Slight brightness jitter
+    if torch.rand(1).item() < 0.5:
+        brightness_factor = 0.85 + 0.3 * torch.rand(1).item()  # [0.85, 1.15]
+        clip = (clip * brightness_factor).clamp(0.0, 1.0)
+
+    # Slight contrast jitter
+    if torch.rand(1).item() < 0.5:
+        mean = clip.mean(dim=[-2, -1], keepdim=True)
+        contrast_factor = 0.85 + 0.3 * torch.rand(1).item()
+        clip = ((clip - mean) * contrast_factor + mean).clamp(0.0, 1.0)
+
+    return clip
+
+
 class VideoManifest(Dataset):
     def __init__(
         self,
         manifest_path: str | Path,
         frames: int = 16,
-        image_size: int = 96
+        image_size: int = 96,
+        augment: bool = False,
     ):
         self.manifest_path = Path(manifest_path)
         self.frames = frames
         self.image_size = image_size
+        self.augment = augment
         self.records: list[dict] = []
 
         if not self.manifest_path.exists():
@@ -163,15 +189,18 @@ class VideoManifest(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         rec = self.records[idx]
         clip = load_clip_from_path(rec['path'], target_frames=self.frames, image_size=self.image_size)
+        if self.augment:
+            clip = apply_augmentations(clip)
         label = torch.tensor(rec['label'], dtype=torch.float32)
         return clip, label
 
 
 class SyntheticSurveillance(Dataset):
-    def __init__(self, count: int = 48, frames: int = 16, size: int = 96):
+    def __init__(self, count: int = 48, frames: int = 16, size: int = 96, augment: bool = False):
         self.count = count
         self.frames = frames
         self.size = size
+        self.augment = augment
 
     def __len__(self) -> int:
         return self.count
@@ -185,4 +214,6 @@ class SyntheticSurveillance(Dataset):
                 y = int(self.size / 2 - 12)
                 base[t, :, y:y + 24, x:x + 24] += 0.75
         base = base.clamp(0.0, 1.0)
+        if self.augment:
+            base = apply_augmentations(base)
         return base, torch.tensor(label, dtype=torch.float32)
