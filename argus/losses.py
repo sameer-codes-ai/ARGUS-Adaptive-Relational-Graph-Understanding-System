@@ -2,7 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def anomaly_loss(pred_scores, targets, smoothness_weight=0.1, sparsity_weight=0.01):
+def mil_ranking_loss(normal_scores, abnormal_scores, margin=1.0):
+    if len(normal_scores) == 0 or len(abnormal_scores) == 0:
+        return torch.tensor(0.0, device=normal_scores.device if len(normal_scores) > 0 else abnormal_scores.device)
+    max_normal = normal_scores.max(dim=1).values
+    max_abnormal = abnormal_scores.max(dim=1).values
+    loss = F.relu(margin - max_abnormal.mean() + max_normal.mean())
+    return loss
+
+
+def anomaly_loss(pred_scores, targets, smoothness_weight=0.1, sparsity_weight=0.01, mil_weight=0.5):
+    # pred_scores: (B, T), targets: (B,)
     video_scores = pred_scores.max(dim=1).values
     bce = F.binary_cross_entropy(video_scores, targets.float())
 
@@ -13,12 +23,21 @@ def anomaly_loss(pred_scores, targets, smoothness_weight=0.1, sparsity_weight=0.
         smooth = torch.tensor(0.0, device=pred_scores.device)
 
     sparse = pred_scores.mean()
-    total = bce + smoothness_weight * smooth + sparsity_weight * sparse
-    return total, {'bce': bce.item(), 'smooth': smooth.item(), 'sparse': sparse.item(), 'total': total.item()}
 
+    # MIL Ranking loss if batch contains both normal (0) and abnormal (1) clips
+    abnormal_mask = (targets == 1.0)
+    normal_mask = (targets == 0.0)
+    if abnormal_mask.any() and normal_mask.any() and mil_weight > 0.0:
+        mil_loss = mil_ranking_loss(pred_scores[normal_mask], pred_scores[abnormal_mask])
+    else:
+        mil_loss = torch.tensor(0.0, device=pred_scores.device)
 
-def mil_ranking_loss(normal_scores, abnormal_scores, margin=1.0):
-    max_normal = normal_scores.max(dim=1).values
-    max_abnormal = abnormal_scores.max(dim=1).values
-    loss = F.relu(margin - max_abnormal.mean() + max_normal.mean())
-    return loss
+    total = bce + smoothness_weight * smooth + sparsity_weight * sparse + mil_weight * mil_loss
+    return total, {
+        'bce': bce.item(),
+        'smooth': smooth.item(),
+        'sparse': sparse.item(),
+        'mil': mil_loss.item(),
+        'total': total.item()
+    }
+
