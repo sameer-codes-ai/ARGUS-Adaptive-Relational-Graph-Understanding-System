@@ -1,0 +1,210 @@
+"""
+Semantic Object Detector & RoI Feature Extractor.
+
+Implements Module 3 of the ARGUS research design:
+  - Detects bounding boxes with semantic classes (Person, Vehicle, Object).
+  - Extracts RoI-aligned visual appearance features for every graph entity
+    from backbone feature maps using bilinear grid sampling.
+"""
+
+from __future__ import annotations
+from typing import Optional, Tuple
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ── COCO Class to ARGUS Semantic Type Mapping ──────────────────────────
+PERSON_CLASSES = {0}
+VEHICLE_CLASSES = {2, 3, 5, 7}          # car, motorcycle, bus, truck
+BAG_CLASSES = {24, 26, 28}              # backpack, handbag, suitcase
+WEAPON_CLASSES = {43}                   # knife
+
+
+def _semantic_type(cls_id: int) -> int:
+    """Map COCO class index to semantic type integer (0=person, 1=vehicle, 2=object)."""
+    if cls_id in PERSON_CLASSES:
+        return 0
+    if cls_id in VEHICLE_CLASSES:
+        return 1
+    return 2
+
+
+class DetectionResult:
+    """Container for per-frame detection outputs."""
+    __slots__ = ("boxes", "scores", "class_ids", "semantic_types")
+
+    def __init__(
+        self,
+        boxes: torch.Tensor,
+        scores: torch.Tensor,
+        class_ids: torch.Tensor,
+        semantic_types: torch.Tensor
+    ):
+        self.boxes = boxes                      # (N, 4) normalised xyxy in [0, 1]
+        self.scores = scores                    # (N,) confidence
+        self.class_ids = class_ids              # (N,) class index
+        self.semantic_types = semantic_types    # (N,) 0=person, 1=vehicle, 2=object
+
+
+class RoIFeatureExtractor(nn.Module):
+    """
+    Extracts fixed-dimensional appearance features for bounding boxes from
+    a feature map using pure-PyTorch bilinear grid sampling.
+    """
+    def __init__(self, in_channels: int, out_dim: int = 64, pool_size: int = 3):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_dim = out_dim
+        self.pool_size = pool_size
+        self.proj = nn.Sequential(
+            nn.Linear(in_channels, out_dim),
+            nn.LayerNorm(out_dim),
+            nn.GELU()
+        )
+
+    def forward(self, feature_map: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            feature_map: (C, H, W) or (1, C, H, W)
+            boxes: (N, 4) in normalised [0, 1] (x1, y1, x2, y2)
+        Returns:
+            roi_features: (N, out_dim)
+        """
+        if feature_map.ndim == 3:
+            feature_map = feature_map.unsqueeze(0)  # (1, C, H, W)
+
+        n = boxes.shape[0]
+        if n == 0:
+            return torch.zeros((0, self.out_dim), device=feature_map.device)
+
+        # Build grid for each box: map [x1, y1, x2, y2] in [0, 1] to [-1, 1]
+        # x_norm = 2 * x - 1
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+
+        # Generate sample points for (pool_size, pool_size)
+        steps = torch.linspace(0, 1, self.pool_size, device=boxes.device)
+        # grid shape: (N, pool_size, pool_size, 2)
+        gx = x1[:, None, None] + (x2 - x1)[:, None, None] * steps[None, None, :]
+        gy = y1[:, None, None] + (y2 - y1)[:, None, None] * steps[None, :, None]
+        gx = gx.expand(n, self.pool_size, self.pool_size)
+        gy = gy.expand(n, self.pool_size, self.pool_size)
+
+        grid = torch.stack([gx * 2.0 - 1.0, gy * 2.0 - 1.0], dim=-1)  # (N, P, P, 2)
+
+        # Expand feature_map to (N, C, H, W)
+        f_expanded = feature_map.expand(n, -1, -1, -1)
+        sampled = F.grid_sample(f_expanded, grid, mode='bilinear', padding_mode='border', align_corners=False)
+        # sampled: (N, C, P, P)
+        pooled = sampled.mean(dim=[-2, -1])  # (N, C)
+
+        return self.proj(pooled)  # (N, out_dim)
+
+
+class SemanticDetector(nn.Module):
+    """
+    Semantic Object Detector with YOLOv11 and heuristic GridDetector fallback.
+    """
+    def __init__(
+        self,
+        confidence: float = 0.3,
+        max_objects: int = 16,
+        model_name: str = "yolo11n.pt"
+    ):
+        super().__init__()
+        self.confidence = confidence
+        self.max_objects = max_objects
+        self.yolo = None
+        self._fallback = None
+
+        try:
+            from ultralytics import YOLO
+            self.yolo = YOLO(model_name)
+            self.yolo.fuse()
+            if hasattr(self.yolo, "model") and hasattr(self.yolo.model, "eval"):
+                self.yolo.model.eval()
+        except Exception:
+            from .graph import GridDetector
+            self._fallback = GridDetector(max_objects)
+
+    @property
+    def has_yolo(self) -> bool:
+        return self.yolo is not None
+
+    @torch.no_grad()
+    def forward(self, frame: torch.Tensor) -> DetectionResult:
+        """
+        Args:
+            frame: (3, H, W) normalized [0, 1] tensor.
+        Returns:
+            DetectionResult
+        """
+        h, w = frame.shape[-2:]
+        if self.yolo is not None:
+            return self._yolo_detect(frame, h, w)
+        return self._fallback_detect(frame, h, w)
+
+    def _yolo_detect(self, frame: torch.Tensor, h: int, w: int) -> DetectionResult:
+        img = (frame.unsqueeze(0) * 255).byte()
+        results = self.yolo(img, verbose=False, conf=self.confidence)
+
+        if len(results) == 0 or len(results[0].boxes) == 0:
+            return self._empty(frame.device)
+
+        det = results[0].boxes
+        boxes_px = det.xyxy.float()
+        scores = det.conf.float()
+        cids = det.cls.long()
+
+        boxes_norm = boxes_px.clone()
+        boxes_norm[:, [0, 2]] /= w
+        boxes_norm[:, [1, 3]] /= h
+
+        sem = torch.tensor(
+            [_semantic_type(int(c)) for c in cids],
+            device=frame.device,
+            dtype=torch.long
+        )
+
+        if len(boxes_norm) > self.max_objects:
+            topk = scores.topk(self.max_objects).indices
+            boxes_norm, scores, cids, sem = (
+                boxes_norm[topk], scores[topk], cids[topk], sem[topk]
+            )
+
+        return DetectionResult(
+            boxes=boxes_norm.to(frame.device),
+            scores=scores.to(frame.device),
+            class_ids=cids.to(frame.device),
+            semantic_types=sem.to(frame.device),
+        )
+
+    def _fallback_detect(self, frame: torch.Tensor, h: int, w: int) -> DetectionResult:
+        boxes = self._fallback(frame)
+        n = len(boxes)
+
+        # Heuristic semantic type tagging:
+        # Tall boxes (height > 1.3 * width) -> likely Person (0)
+        # Broad or very large boxes -> Vehicle/Object (1 or 2)
+        widths = boxes[:, 2] - boxes[:, 0]
+        heights = boxes[:, 3] - boxes[:, 1]
+        aspect_ratio = heights / (widths + 1e-6)
+
+        sem = torch.full((n,), 2, device=frame.device, dtype=torch.long)  # default: Generic object
+        sem[widths * heights > 0.25] = 1   # Large vehicle / boundary
+        sem[aspect_ratio > 1.3] = 0        # Person (tall boxes override)
+
+        return DetectionResult(
+            boxes=boxes,
+            scores=torch.ones(n, device=frame.device),
+            class_ids=sem,
+            semantic_types=sem,
+        )
+
+    def _empty(self, device: torch.device) -> DetectionResult:
+        return DetectionResult(
+            boxes=torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=device),
+            scores=torch.ones(1, device=device),
+            class_ids=torch.zeros(1, device=device, dtype=torch.long),
+            semantic_types=torch.full((1,), 2, device=device, dtype=torch.long),
+        )

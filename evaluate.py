@@ -28,12 +28,13 @@ def format_duration(seconds: float) -> str:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate ARGUS Model Checkpoint.")
+    parser.add_argument('--config', type=Path, default=None, help='Optional path to YAML config file.')
     parser.add_argument('--checkpoint', type=Path, required=True, help='Path to model checkpoint (.pt).')
-    parser.add_argument('--manifest', type=str, help='Path to evaluation manifest CSV.')
+    parser.add_argument('--manifest', type=str, default=None, help='Path to evaluation manifest CSV.')
     parser.add_argument('--synthetic', action='store_true', help='Evaluate on synthetic data.')
     parser.add_argument('--batch-size', type=int, default=4, help='Batch size for evaluation.')
     parser.add_argument('--frames', type=int, default=16, help='Number of frames per clip.')
-    parser.add_argument('--image-size', type=int, default=96, help='Spatial resolution.')
+    parser.add_argument('--image-size', type=int, default=None, help='Spatial resolution. Auto-detected from checkpoint if not specified.')
     parser.add_argument('--output-json', type=Path, default=None, help='Optional path to save metrics JSON.')
     parser.add_argument('--max-samples', type=int, default=None, help='Limit evaluation samples for fast testing.')
     return parser.parse_args()
@@ -41,8 +42,17 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    if args.config and args.config.exists():
+        import yaml
+        with open(args.config, 'r', encoding='utf-8') as f:
+            yaml_cfg = yaml.safe_load(f) or {}
+        data_cfg = yaml_cfg.get('data', {})
+        if not args.manifest:
+            args.manifest = data_cfg.get('test_manifest') or data_cfg.get('val_manifest')
+
     if not args.synthetic and not args.manifest:
-        raise ValueError("Either --synthetic or --manifest must be specified.")
+        raise ValueError("Either --synthetic, --manifest, or a --config containing test_manifest must be specified.")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Evaluation compute device: {device.upper()}")
@@ -56,17 +66,19 @@ def main():
 
     saved_cfg = state.get('config', {})
     config = ARGUSConfig.from_dict(saved_cfg) if saved_cfg else ARGUSConfig()
-    config.image_size = args.image_size
+    if args.image_size is not None:
+        config.image_size = args.image_size
 
     model = ARGUS(config=config).to(device)
-    model.load_state_dict(state['model'])
+    state_dict = state['model'] if isinstance(state, dict) and 'model' in state else state
+    model.load_state_dict(state_dict)
     model.eval()
-    print(f"Loaded checkpoint: {args.checkpoint} (Epoch {state.get('epoch', '?')})")
+    print(f"Loaded checkpoint: {args.checkpoint} (Epoch {state.get('epoch', '?') if isinstance(state, dict) else '?'})")
 
     if args.synthetic:
-        dataset = SyntheticSurveillance(count=48, frames=args.frames, size=args.image_size)
+        dataset = SyntheticSurveillance(count=48, frames=args.frames, size=config.image_size)
     else:
-        dataset = VideoManifest(args.manifest, frames=args.frames, image_size=args.image_size)
+        dataset = VideoManifest(args.manifest, frames=args.frames, image_size=config.image_size)
 
     total_samples_to_eval = min(len(dataset), args.max_samples) if args.max_samples else len(dataset)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)

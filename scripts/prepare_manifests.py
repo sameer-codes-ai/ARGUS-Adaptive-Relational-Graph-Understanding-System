@@ -198,7 +198,7 @@ def main():
     proc_records = discover_processed_clips(args.processed_root)
     print(f"  - Processed Clips:  {len(proc_records)} clips")
 
-    total_records = rl_records + ucf_records + st_records
+    total_records = rl_records + ucf_records + st_records + proc_records
     print(f"Total raw sequences: {len(total_records)} + {len(proc_records)} clips\n")
 
     print("Generating stratified splits (Train/Val/Test)...")
