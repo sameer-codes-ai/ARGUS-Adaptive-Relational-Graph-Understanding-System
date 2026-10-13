@@ -3,14 +3,14 @@ import numpy as np
 
 def binary_metrics(preds, targets, threshold=0.5):
     if isinstance(preds, torch.Tensor):
-        p = preds.detach().cpu().numpy()
+        p = preds.detach().cpu().numpy().flatten()
     else:
-        p = np.asarray(preds)
+        p = np.asarray(preds).flatten()
 
     if isinstance(targets, torch.Tensor):
-        y = targets.detach().cpu().numpy()
+        y = targets.detach().cpu().numpy().flatten()
     else:
-        y = np.asarray(targets)
+        y = np.asarray(targets).flatten()
 
     p_bin = (p >= threshold).astype(np.int64)
     y_int = y.astype(np.int64)

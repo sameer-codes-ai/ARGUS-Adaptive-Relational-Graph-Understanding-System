@@ -14,7 +14,7 @@ import torch
 import cv2
 import numpy as np
 
-from argus import ARGUS
+from argus import ARGUS, AlertDispatcher, generate_dashboard_html
 from argus.config import ARGUSConfig
 from argus.data import load_clip_from_path
 
@@ -36,9 +36,10 @@ def parse_args():
     parser.add_argument('--input', type=str, required=True, help='Path to video file (.mp4/.avi) or frame folder.')
     parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints/best.pt'), help='Path to model checkpoint.')
     parser.add_argument('--frames', type=int, default=16, help='Number of input frames to sample.')
-    parser.add_argument('--image-size', type=int, default=96, help='Spatial resolution.')
+    parser.add_argument('--image-size', type=int, default=None, help='Spatial resolution. Auto-detected from checkpoint if not specified.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Anomaly classification decision threshold.')
     parser.add_argument('--output-json', type=Path, default=None, help='Path to save inference result JSON.')
+    parser.add_argument('--dashboard', type=Path, default=None, help='Optional path to export interactive HTML dashboard.')
     parser.add_argument('--stream', action='store_true', help='Update temporal streaming memory.')
     return parser.parse_args()
 
@@ -62,14 +63,16 @@ def main():
         state = torch.load(checkpoint_bytes, map_location=device, weights_only=False)
         saved_cfg = state.get('config', {})
         config = ARGUSConfig.from_dict(saved_cfg) if saved_cfg else ARGUSConfig()
-        config.image_size = args.image_size
+        if args.image_size is not None:
+            config.image_size = args.image_size
         model = ARGUS(config=config).to(device)
-        model.load_state_dict(state['model'])
+        state_dict = state['model'] if isinstance(state, dict) and 'model' in state else state
+        model.load_state_dict(state_dict)
         load_time = time.perf_counter() - t0
-        print(f"[OK] [1/3] Loaded model checkpoint: {args.checkpoint} (Epoch {state.get('epoch', '?')}) in {format_duration(load_time)}")
+        print(f"[OK] [1/3] Loaded model checkpoint: {args.checkpoint} (Epoch {state.get('epoch', '?') if isinstance(state, dict) else '?'}) in {format_duration(load_time)}")
     else:
         print(f"Notice: Checkpoint {args.checkpoint} not found. Running with initialized weights.")
-        config = ARGUSConfig(image_size=args.image_size)
+        config = ARGUSConfig(image_size=args.image_size or 96)
         model = ARGUS(config=config).to(device)
         load_time = time.perf_counter() - t0
 
@@ -78,10 +81,10 @@ def main():
     # Step 2: Video reading & decoding
     t1 = time.perf_counter()
     print(f"[*] [2/3] Reading & preprocessing video clip from {input_path.name}...")
-    clip = load_clip_from_path(input_path, target_frames=args.frames, image_size=args.image_size)
+    clip = load_clip_from_path(input_path, target_frames=args.frames, image_size=config.image_size)
     clip_batch = clip.unsqueeze(0).to(device)  # (1, T, C, H, W)
     decode_time = time.perf_counter() - t1
-    print(f"[OK] [2/3] Decoded {args.frames} frames ({args.image_size}x{args.image_size}) in {format_duration(decode_time)}")
+    print(f"[OK] [2/3] Decoded {args.frames} frames ({config.image_size}x{config.image_size}) in {format_duration(decode_time)}")
 
     # Step 3: Neural reasoning & graph inference
     t2 = time.perf_counter()
@@ -133,11 +136,25 @@ def main():
         }
     }
 
+    dispatcher = AlertDispatcher(threshold=args.threshold)
+    event = dispatcher.dispatch(
+        video_source=str(input_path),
+        timeline_scores=scores_seq,
+        keyframe_indices=sampled_indices,
+        boxes_per_frame=out.boxes[0] if out.boxes else None
+    )
+
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         with open(args.output_json, 'w', encoding='utf-8') as f:
             json.dump(result, f, indent=2)
         print(f"\n[OK] Saved inference results to {args.output_json}")
+
+    if args.dashboard and event:
+        fps_rate = float(args.frames / max(infer_time, 1e-6))
+        lat_ms = float((infer_time / max(args.frames, 1)) * 1000.0)
+        generate_dashboard_html(event, args.dashboard, fps=fps_rate, latency_ms=lat_ms)
+        print(f"[OK] Generated interactive dashboard: {args.dashboard}")
 
 
 if __name__ == '__main__':

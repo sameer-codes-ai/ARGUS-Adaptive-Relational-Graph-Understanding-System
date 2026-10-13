@@ -1,20 +1,39 @@
+"""
+Dynamic Scene Graph Generation & Relational Edge-Conditioned Graph Attention (EdgeGAT).
+
+Implements Modules 3 & 4 of the ARGUS research design:
+  - Bounding box detection and dynamic interaction scene graph construction.
+  - Models Person-to-Person and Person-to-Object relationships explicitly in edge attributes.
+  - Vectorized Multi-Head Edge-Conditioned Graph Attention Network (EdgeGAT).
+"""
+
+from __future__ import annotations
+from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class GridDetector:
-    def __init__(self, max_objects=12):
+    """Fast non-learned heuristic detector using spatial gradient and variance."""
+    def __init__(self, max_objects: int = 12):
         self.max_objects = max_objects
 
     @torch.no_grad()
-    def __call__(self, frame):
+    def __call__(self, frame: torch.Tensor) -> torch.Tensor:
         h, w = frame.shape[-2:]
-        energy = frame.mean(0)
+        gray = frame.mean(0)
+        gx = torch.zeros_like(gray)
+        gy = torch.zeros_like(gray)
+        gx[:, :-1] = torch.abs(gray[:, 1:] - gray[:, :-1])
+        gy[:-1, :] = torch.abs(gray[1:, :] - gray[:-1, :])
+        energy = gx + gy
         cell = max(8, min(h, w) // 6)
         candidates = []
         for y in range(0, h - cell + 1, cell):
             for x in range(0, w - cell + 1, cell):
-                candidates.append((energy[y:y + cell, x:x + cell].var().item(), x, y, x + cell, y + cell))
+                score = energy[y:y + cell, x:x + cell].sum().item() + gray[y:y + cell, x:x + cell].var().item()
+                candidates.append((score, x, y, x + cell, y + cell))
         candidates.sort(key=lambda a: float(a[0]), reverse=True)
         boxes = torch.tensor(
             [[x / w, y / h, x2 / w, y2 / h] for _, x, y, x2, y2 in candidates[:self.max_objects]],
@@ -27,12 +46,70 @@ class GridDetector:
 
 
 class DynamicSceneGraphBuilder:
-    def __init__(self, max_objects=12, dist_threshold=0.6):
-        self.detector = GridDetector(max_objects)
+    """
+    Constructs an interaction scene graph for a video frame.
+    Supports Person-to-Person (P2P), Person-to-Object (P2O), and Object-to-Object (O2O)
+    relational conditioning.
+    """
+    def __init__(
+        self,
+        max_objects: int = 12,
+        dist_threshold: float = 0.6,
+        detector=None,
+        use_semantic: bool = False
+    ):
+        self.max_objects = max_objects
         self.dist_threshold = dist_threshold
+        self.use_semantic = use_semantic
+        if detector is not None:
+            self.detector = detector
+        elif use_semantic:
+            from .detector import SemanticDetector
+            self.detector = SemanticDetector(max_objects=max_objects)
+        else:
+            self.detector = GridDetector(max_objects)
 
-    def build(self, frame, prev_boxes=None):
-        boxes = self.detector(frame)
+    def build(
+        self,
+        frame: torch.Tensor,
+        prev_boxes: Optional[torch.Tensor] = None,
+        visual_features: Optional[torch.Tensor] = None,
+        detection_result=None
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], torch.Tensor, torch.Tensor]:
+        """
+        Build scene graph for a single frame.
+
+        Args:
+            frame: (3, H, W) normalized image.
+            prev_boxes: (N_prev, 4) boxes from prior frame for velocity estimation.
+            visual_features: (N, D_vis) optional RoI visual features.
+            detection_result: Pre-computed detection result to avoid re-running detector.
+        Returns:
+            node_feats: (N, D_node)
+            edges: (src, dst) long tensors
+            edge_attr: (E, D_edge)
+            boxes: (N, 4) bounding boxes
+        """
+        # Detection step — use pre-computed result if available
+        sem_types = None
+        if detection_result is not None:
+            if hasattr(detection_result, 'boxes'):
+                boxes = detection_result.boxes
+                sem_types = detection_result.semantic_types
+                scores = detection_result.scores
+            else:
+                boxes = detection_result
+        elif hasattr(self.detector, 'forward') and callable(getattr(self.detector, 'forward', None)):
+            det_result = self.detector(frame)
+            if hasattr(det_result, 'boxes'):
+                boxes = det_result.boxes
+                sem_types = det_result.semantic_types
+                scores = det_result.scores
+            else:
+                boxes = det_result
+        else:
+            boxes = self.detector(frame)
+
         n = len(boxes)
         centers = (boxes[:, :2] + boxes[:, 2:]) / 2.0
         sizes = (boxes[:, 2:] - boxes[:, :2]).clamp(min=1e-4)
@@ -43,8 +120,23 @@ class DynamicSceneGraphBuilder:
         else:
             velocity = torch.zeros_like(centers)
 
-        node_feats = torch.cat([centers, sizes, velocity], dim=-1)
+        # Build node features
+        if self.use_semantic and sem_types is not None:
+            # 6 dims kinematics + 3 dims semantic one-hot + 1 dim confidence = 10 dims
+            sem_one_hot = F.one_hot(sem_types.clamp(0, 2), num_classes=3).float().to(frame.device)
+            conf = scores.unsqueeze(-1).to(frame.device) if 'scores' in locals() else torch.ones((n, 1), device=frame.device)
+            node_parts = [centers, sizes, velocity, sem_one_hot, conf]
+            if visual_features is not None and visual_features.shape[0] == n:
+                node_parts.append(visual_features)
+            node_feats = torch.cat(node_parts, dim=-1)
+        else:
+            # Legacy 6-dim node features: [centers, sizes, velocity]
+            node_parts = [centers, sizes, velocity]
+            if visual_features is not None and visual_features.shape[0] == n:
+                node_parts.append(visual_features)
+            node_feats = torch.cat(node_parts, dim=-1)
 
+        # Build edges and relational attributes
         edges_src, edges_dst, edge_attrs = [], [], []
         for i in range(n):
             for j in range(n):
@@ -62,15 +154,32 @@ class DynamicSceneGraphBuilder:
                     union = area_i + area_j - inter + 1e-6
                     iou = inter / union
                     rel_vel = torch.norm(velocity[i] - velocity[j])
+
+                    if self.use_semantic and sem_types is not None:
+                        ti = int(sem_types[i].item())
+                        tj = int(sem_types[j].item())
+                        is_p2p = 1.0 if (ti == 0 and tj == 0) else 0.0
+                        is_p2o = 1.0 if ((ti == 0 and tj != 0) or (ti != 0 and tj == 0)) else 0.0
+                        is_o2o = 1.0 if (ti != 0 and tj != 0) else 0.0
+                        # 4 kinematic + 3 relational = 7 dims
+                        edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0, is_p2p, is_p2o, is_o2o])
+                    else:
+                        # Legacy 4 dims
+                        edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0])
+
                     edges_src.append(i)
                     edges_dst.append(j)
-                    edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0])
 
         if not edges_src:
             for i in range(n):
                 edges_src.append(i)
                 edges_dst.append(i)
-                edge_attrs.append([0.0, 1.0, 0.0, 1.0])
+                if self.use_semantic and sem_types is not None:
+                    ti = int(sem_types[i].item())
+                    is_p = 1.0 if ti == 0 else 0.0
+                    edge_attrs.append([0.0, 1.0, 0.0, 1.0, is_p, 0.0, 1.0 - is_p])
+                else:
+                    edge_attrs.append([0.0, 1.0, 0.0, 1.0])
 
         src = torch.tensor(edges_src, device=frame.device, dtype=torch.long)
         dst = torch.tensor(edges_dst, device=frame.device, dtype=torch.long)
@@ -79,7 +188,11 @@ class DynamicSceneGraphBuilder:
 
 
 class EdgeGAT(nn.Module):
-    def __init__(self, in_dim=6, edge_dim=4, out_dim=128, heads=4):
+    """
+    Edge-Conditioned Multi-Head Graph Attention Network.
+    Fully vectorized with PyTorch scatter operations for fast training and inference.
+    """
+    def __init__(self, in_dim: int = 6, edge_dim: int = 4, out_dim: int = 128, heads: int = 4):
         super().__init__()
         self.heads = heads
         self.head_dim = out_dim // heads
@@ -89,7 +202,7 @@ class EdgeGAT(nn.Module):
         nn.init.xavier_uniform_(self.attn)
         self.out_proj = nn.Linear(out_dim, out_dim)
 
-    def forward(self, x, edges, edge_attr):
+    def forward(self, x: torch.Tensor, edges: Tuple[torch.Tensor, torch.Tensor], edge_attr: torch.Tensor) -> torch.Tensor:
         n = x.shape[0]
         h = self.proj(x).view(n, self.heads, self.head_dim)
         src, dst = edges
@@ -101,15 +214,34 @@ class EdgeGAT(nn.Module):
         logits = (combined * self.attn.unsqueeze(0)).sum(dim=-1)
         logits = F.leaky_relu(logits, 0.2)
 
+        # Vectorized scatter-based attention
+        num_edges = logits.shape[0]
+        if num_edges == 0:
+            return self.out_proj(h.view(n, -1))
+
+        # Scatter-max for numerical stability
+        max_logits = logits.new_full((n, self.heads), float('-inf'))
+        max_logits.scatter_reduce_(0, dst.unsqueeze(-1).expand_as(logits), logits, reduce='amax', include_self=True)
+        max_logits = max_logits.clamp(min=-1e9)
+
+        exp_logits = torch.exp(logits - max_logits[dst])
+
+        sum_exp = torch.zeros(n, self.heads, device=x.device, dtype=x.dtype)
+        sum_exp.scatter_add_(0, dst.unsqueeze(-1).expand_as(exp_logits), exp_logits)
+        sum_exp = sum_exp.clamp(min=1e-8)
+
+        alpha = (exp_logits / sum_exp[dst]).unsqueeze(-1)
+
+        msg = (h_src + e_feat) * alpha
         out = torch.zeros_like(h)
-        for i in range(n):
-            mask = (dst == i)
-            if mask.any():
-                alpha = F.softmax(logits[mask], dim=0).unsqueeze(-1)
-                msg = (h_src[mask] + e_feat[mask]) * alpha
-                out[i] = msg.sum(dim=0)
-            else:
-                out[i] = h[i]
+        out.scatter_add_(0, dst.unsqueeze(-1).unsqueeze(-1).expand_as(msg), msg)
+
+        # Self-loop for isolated nodes (no incoming edges)
+        incoming_count = torch.zeros(n, device=x.device)
+        incoming_count.scatter_add_(0, dst, torch.ones(num_edges, device=x.device))
+        isolated = (incoming_count == 0)
+        if isolated.any():
+            out[isolated] = h[isolated]
 
         out = out.view(n, -1)
         return self.out_proj(out)

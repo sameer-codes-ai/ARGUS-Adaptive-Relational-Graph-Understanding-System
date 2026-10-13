@@ -5,14 +5,9 @@ __pycache__/
 *$py.class
 .pytest_cache/
 
-# Documentation / research notes
-docs/
-01_literature_survey.md
-02_novelty_analysis.md
-03_research_design.md
-dataset_and_method_description.md
-introduction.md
-methodology.md
+# Temporary data caches
+data/cache/
+*.tmp
 
 # Checkpoints and output artifacts
 outputs/
@@ -21,4 +16,6 @@ outputs/
 
 # OS files
 .DS_Store
-Thumbs.db
+Thumbs.db
+
+docs/

@@ -12,8 +12,8 @@ def mil_ranking_loss(normal_scores, abnormal_scores, margin=1.0):
 
 
 def anomaly_loss(pred_scores, targets, smoothness_weight=0.1, sparsity_weight=0.01, mil_weight=0.5):
-    # pred_scores: (B, T), targets: (B,)
-    video_scores = pred_scores.max(dim=1).values
+    # Clamp to avoid numerical precision errors (e.g. > 1.0 or log(0) in BCE)
+    video_scores = pred_scores.max(dim=1).values.clamp(1e-6, 1.0 - 1e-6)
     bce = F.binary_cross_entropy(video_scores, targets.float())
 
     if pred_scores.shape[1] > 1:
