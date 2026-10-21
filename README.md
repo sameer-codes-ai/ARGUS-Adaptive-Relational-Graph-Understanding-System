@@ -1,7 +1,7 @@
 # ARGUS — Adaptive Relational Graph Understanding for Surveillance
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1+-ee4c2c.svg)](https://pytorch.org/)
-[![Tests](https://img.shields.io/badge/tests-13%20passed-success.svg)](tests/test_argus.py)
+[![Tests](https://img.shields.io/badge/tests-26%20passed-success.svg)](tests/test_all_fixes.py)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 
@@ -97,29 +97,28 @@ pip install -r requirements.txt
 
 ### 2. Run Tests
 
-Verify all 13 unit and integration tests across the complete dual-layer pipeline:
+Verify all 26 unit and integration tests across the complete dual-layer pipeline:
 
 ```powershell
-python -m pytest tests/test_argus.py -v
+python -m pytest tests/ -v
 ```
 
-Expected output:
+All 26 tests pass with 100% success.
+
+### 3. Launch Live Interactive Web Demo
+
+Launch the browser-based surveillance monitoring UI:
+
+```powershell
+# Double-click run_demo.bat, or run:
+python web_demo.py --port 7860
 ```
-tests/test_argus.py::test_sampler_keeps_temporal_coverage PASSED
-tests/test_argus.py::test_end_to_end_forward_and_loss PASSED
-tests/test_argus.py::test_mil_ranking_loss PASSED
-tests/test_argus.py::test_streaming_memory_is_bounded PASSED
-tests/test_argus.py::test_synthetic_dataset_loader PASSED
-tests/test_argus.py::test_binary_metrics PASSED
-tests/test_argus.py::test_config_serialization PASSED
-tests/test_argus.py::test_spatial_backbone PASSED
-tests/test_argus.py::test_semantic_detector_and_roi PASSED
-tests/test_argus.py::test_semantic_scene_graph_relations PASSED
-tests/test_argus.py::test_dynamic_attention_modulation PASSED
-tests/test_argus.py::test_outer_layer_end_to_end_forward PASSED
-tests/test_argus.py::test_explainability_and_alerts PASSED
-============================= 13 passed in 5.67s ==============================
-```
+
+Navigate to **`http://localhost:7860`** to:
+- Test 1-click curated benchmark presets (**Street Violence**, **Assault**, **Store Robbery**, **Public Walkway**).
+- Upload custom CCTV / RTSP video files.
+- Scrub interactive video playback with detected actor bounding boxes and EdgeGAT relational links.
+- View real-time synchronized Anomaly Timeline graphs (Chart.js) and automated hysteresis threat alerts.
 
 ---
 

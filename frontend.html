@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARGUS — Surveillance AI Intelligence Console</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#070a10;
+  --surface:#0e1422;
+  --surface-hover:#162035;
+  --border:#1c273e;
+  --text:#f1f5f9;
+  --muted:#718096;
+  --cyan:#00e5ff;
+  --red:#ff2e54;
+  --green:#00e676;
+  --amber:#ffab00;
+}
+html,body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  min-height:100vh;
+  overflow-x:hidden;
+}
+.mono{font-family:'Consolas','Monaco','Courier New',monospace}
+.container{
+  max-width:1200px;
+  margin:0 auto;
+  padding:0 20px;
+}
+
+/* Header */
+header{
+  background:rgba(7,10,16,.96);
+  border-bottom:1px solid var(--border);
+  padding:14px 0;
+  position:sticky;
+  top:0;
+  z-index:50;
+  backdrop-filter:blur(10px);
+}
+.header-inner{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:12px;
+}
+.brand{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.brand-icon{
+  width:36px;
+  height:36px;
+  border-radius:8px;
+  background:linear-gradient(135deg,#00b4d8,#4361ee);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:18px;
+  color:#fff;
+}
+.brand-title{
+  font-size:17px;
+  font-weight:800;
+  letter-spacing:-.3px;
+}
+.tag{
+  font-size:10px;
+  padding:2px 8px;
+  border-radius:20px;
+  font-weight:700;
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+}
+.tag-cyan{background:rgba(0,229,255,.12);color:var(--cyan);border:1px solid rgba(0,229,255,.3)}
+.tag-green{background:rgba(0,230,118,.12);color:var(--green);border:1px solid rgba(0,230,118,.3)}
+.hbtn{
+  font-size:11px;
+  padding:6px 12px;
+  border-radius:8px;
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--text);
+  cursor:pointer;
+  text-decoration:none;
+  font-weight:600;
+  transition:all .15s;
+}
+.hbtn:hover{background:var(--surface-hover);border-color:#334155}
+
+/* Top Source Selector Bar */
+.source-bar{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:10px 14px;
+  margin:20px 0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:12px;
+}
+.source-group{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.source-label{
+  font-size:11px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.6px;
+  color:var(--muted);
+  margin-right:4px;
+}
+.pill{
+  font-size:11px;
+  font-weight:600;
+  padding:6px 12px;
+  border-radius:8px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  color:var(--text);
+  cursor:pointer;
+  transition:all .15s;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+}
+.pill:hover{background:var(--surface-hover);border-color:#475569}
+.pill.active{
+  background:rgba(0,229,255,.12);
+  border-color:var(--cyan);
+  color:var(--cyan);
+  box-shadow:0 0 15px -3px rgba(0,229,255,.3);
+}
+.upload-btn{
+  font-size:11px;
+  font-weight:700;
+  padding:6px 14px;
+  border-radius:8px;
+  border:1px solid rgba(0,229,255,.4);
+  background:linear-gradient(135deg,rgba(0,229,255,.15),rgba(67,97,238,.2));
+  color:var(--cyan);
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  transition:all .15s;
+}
+.upload-btn:hover{filter:brightness(1.2);border-color:var(--cyan)}
+.file-info-pill{
+  font-size:11px;
+  color:var(--cyan);
+  font-family:monospace;
+  display:none;
+}
+
+/* Main Layout Grid - Strictly Locked Tracks */
+.main-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 340px;
+  gap:20px;
+  align-items:start;
+}
+@media(max-width:960px){
+  .main-grid{grid-template-columns:minmax(0,1fr);}
+}
+
+/* Player Stage */
+.stage-card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:14px;
+  min-width:0;
+}
+.stage-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:10px;
+  padding-bottom:8px;
+  border-bottom:1px solid var(--border);
+  font-size:11px;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.stage-title{
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+
+/* Mode Switcher */
+.mode-switch{
+  display:inline-flex;
+  background:rgba(255,255,255,0.04);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:2px;
+  gap:2px;
+}
+.mode-btn{
+  background:transparent;
+  border:none;
+  color:var(--muted);
+  font-size:10px;
+  font-weight:700;
+  padding:4px 10px;
+  border-radius:6px;
+  cursor:pointer;
+  transition:all .15s;
+}
+.mode-btn.active{
+  background:rgba(0,229,255,.18);
+  color:var(--cyan);
+}
+
+/* Strictly Fixed Player Box — Video resizes to box, NOT box to video */
+.player-box{
+  width:100%;
+  height:420px;
+  max-height:420px;
+  background:#000;
+  border-radius:10px;
+  position:relative;
+  overflow:hidden;
+  border:1px solid #1a2235;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  transition:border-color .2s;
+}
+.player-box.alert-flash{
+  border-color:var(--red);
+  box-shadow:0 0 20px -3px rgba(255,46,84,.4);
+}
+.player-box img,
+.player-box video{
+  max-width:100%;
+  max-height:100%;
+  width:auto;
+  height:auto;
+  object-fit:contain;
+  display:block;
+  user-select:none;
+}
+.player-placeholder{
+  position:absolute;
+  inset:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  color:#334155;
+  font-size:12px;
+}
+.spinner-overlay{
+  position:absolute;
+  inset:0;
+  background:rgba(7,10,16,.85);
+  backdrop-filter:blur(4px);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:10px;
+  z-index:20;
+  display:none;
+}
+.spinner-overlay.show{display:flex}
+.spinner{
+  width:36px;
+  height:36px;
+  border:3px solid var(--cyan);
+  border-top-color:transparent;
+  border-radius:50%;
+  animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Live Cyber-HUD Overlay */
+.live-hud{
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  padding:12px;
+  z-index:10;
+}
+.live-hud-top{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  background:rgba(7,10,16,.8);
+  backdrop-filter:blur(6px);
+  padding:6px 12px;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,.08);
+}
+.live-hud-badge{
+  font-size:11px;
+  font-weight:800;
+  padding:3px 10px;
+  border-radius:6px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  transition:all .2s;
+}
+.live-hud-badge.safe{background:rgba(0,230,118,.2);color:var(--green);border:1px solid rgba(0,230,118,.4)}
+.live-hud-badge.elevated{background:rgba(0,229,255,.2);color:var(--cyan);border:1px solid rgba(0,229,255,.4)}
+.live-hud-badge.high{background:rgba(255,171,0,.2);color:var(--amber);border:1px solid rgba(255,171,0,.4)}
+.live-hud-badge.critical{
+  background:rgba(255,46,84,.25);
+  color:var(--red);
+  border:1px solid rgba(255,46,84,.6);
+  animation:criticalPulse 1s infinite alternate;
+}
+@keyframes criticalPulse{from{box-shadow:0 0 4px rgba(255,46,84,.3)}to{box-shadow:0 0 16px rgba(255,46,84,.8)}}
+
+.live-hud-bottom{
+  width:100%;
+  height:5px;
+  background:rgba(255,255,255,.1);
+  border-radius:3px;
+  overflow:hidden;
+}
+.live-hud-progress{
+  height:100%;
+  width:0%;
+  background:var(--green);
+  transition:width .1s linear, background-color .2s;
+}
+
+/* Controls Bar */
+.controls-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-top:10px;
+  flex-wrap:wrap;
+  font-size:11px;
+}
+.cbtn{
+  padding:6px 12px;
+  border-radius:6px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.04);
+  color:var(--text);
+  cursor:pointer;
+  font-weight:600;
+  font-size:11px;
+  transition:all .15s;
+}
+.cbtn:hover{background:var(--surface-hover)}
+.cbtn.play{
+  background:var(--cyan);
+  color:#000;
+  border-color:var(--cyan);
+  font-weight:800;
+}
+.cbtn.play:hover{filter:brightness(1.15)}
+.scrubber-slider{
+  flex:1;
+  min-width:120px;
+  height:6px;
+  -webkit-appearance:none;
+  appearance:none;
+  background:#1a2335;
+  border-radius:4px;
+  outline:none;
+  cursor:pointer;
+}
+.scrubber-slider::-webkit-slider-thumb{
+  -webkit-appearance:none;
+  width:16px;
+  height:16px;
+  border-radius:50%;
+  background:var(--cyan);
+  cursor:pointer;
+  box-shadow:0 0 8px var(--cyan);
+}
+.speed-select{
+  background:var(--surface);
+  color:var(--text);
+  border:1px solid var(--border);
+  border-radius:6px;
+  padding:4px 8px;
+  font-size:10px;
+  cursor:pointer;
+}
+
+/* Timeline Chart */
+.chart-card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:14px;
+  margin-top:16px;
+  min-width:0;
+}
+.chart-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  font-size:11px;
+  margin-bottom:8px;
+}
+.chart-wrap{
+  width:100%;
+  height:120px;
+  position:relative;
+  overflow:hidden;
+}
+
+/* Sidebar Info Panel */
+.side-panel{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  min-width:0;
+}
+.side-card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:14px;
+  min-width:0;
+}
+.verdict-box{
+  border-radius:10px;
+  padding:12px;
+  margin-bottom:12px;
+  border:1px solid;
+}
+.verdict-box.threat{
+  background:rgba(255,46,84,.1);
+  border-color:rgba(255,46,84,.3);
+}
+.verdict-box.high{
+  background:rgba(255,171,0,.1);
+  border-color:rgba(255,171,0,.3);
+}
+.verdict-box.elevated{
+  background:rgba(0,229,255,.1);
+  border-color:rgba(0,229,255,.3);
+}
+.verdict-box.safe{
+  background:rgba(0,230,118,.1);
+  border-color:rgba(0,230,118,.3);
+}
+.verdict-head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-weight:800;
+  font-size:13px;
+  letter-spacing:.3px;
+  margin-bottom:4px;
+}
+.pulse-dot{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  box-shadow:0 0 8px currentColor;
+}
+.verdict-desc{
+  font-size:11px;
+  color:var(--muted);
+  line-height:1.4;
+}
+
+/* Metric Grid */
+.metric-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin-bottom:12px;
+}
+.metric-tile{
+  background:rgba(255,255,255,.02);
+  border:1px solid rgba(255,255,255,.05);
+  border-radius:8px;
+  padding:8px 10px;
+}
+.metric-title{
+  font-size:9px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  color:var(--muted);
+}
+.metric-num{
+  font-size:16px;
+  font-weight:800;
+  margin-top:2px;
+}
+
+.tech-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  font-size:11px;
+  padding:5px 0;
+  border-bottom:1px solid rgba(255,255,255,.04);
+}
+.tech-row:last-child{border-bottom:none}
+.tech-label{color:var(--muted)}
+.tech-val{font-weight:600}
+
+/* Paper Modal */
+.modal-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.75);
+  backdrop-filter:blur(6px);
+  z-index:100;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:20px;
+}
+.modal-overlay.show{display:flex}
+.modal-box{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  max-width:540px;
+  width:100%;
+  padding:22px;
+  position:relative;
+}
+.modal-close{
+  position:absolute;
+  top:14px;
+  right:14px;
+  background:transparent;
+  border:none;
+  color:var(--muted);
+  font-size:18px;
+  cursor:pointer;
+}
+.bench-grid{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:8px;
+  margin:14px 0;
+}
+.bench-cell{
+  background:rgba(255,255,255,.03);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:10px 8px;
+  text-align:center;
+}
+.bench-num{font-size:15px;font-weight:800;color:var(--cyan);font-family:monospace}
+.bench-lbl{font-size:9px;color:var(--muted);margin-top:2px}
+
+footer{
+  border-top:1px solid var(--border);
+  padding:16px 0;
+  font-size:11px;
+  color:#475569;
+  text-align:center;
+  margin-top:30px;
+}
+</style>
+</head>
+<body>
+
+<header>
+<div class="container header-inner">
+  <div class="brand">
+    <div class="brand-icon">&#128737;</div>
+    <div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="brand-title">ARGUS</span>
+        <span class="tag tag-cyan mono">EDGE SURVEILLANCE</span>
+        <span class="tag tag-green"><span style="width:6px;height:6px;border-radius:50%;background:var(--green)"></span> ONLINE</span>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span class="mono" style="font-size:10px;color:var(--muted);padding-right:8px;border-right:1px solid var(--border)">Joint E2E Checkpoint (0.795 ROC-AUC)</span>
+    <button class="hbtn" onclick="document.getElementById('paperModal').classList.add('show')">&#128196; Paper</button>
+    <a class="hbtn" href="/outputs/dashboard_violence.html" target="_blank">&#128202; Report</a>
+  </div>
+</div>
+</header>
+
+<main class="container">
+
+<!-- Compact Source Selector Bar -->
+<div class="source-bar">
+  <div class="source-group">
+    <span class="source-label">Feeds:</span>
+    <button class="pill active" id="pill-violence_691" onclick="selectPreset('violence_691')">🚨 Street Fight</button>
+    <button class="pill" id="pill-violence_308" onclick="selectPreset('violence_308')">⚠️ Brawl</button>
+    <button class="pill" id="pill-robbery_087" onclick="selectPreset('robbery_087')">🛑 Robbery</button>
+    <button class="pill" id="pill-normal_344" onclick="selectPreset('normal_344')">🛡️ Walkway</button>
+    <button class="pill" id="pill-normal_950" onclick="selectPreset('normal_950')">✅ Plaza</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <input type="file" id="fileInput" accept=".mp4,.avi,.mov,.webm" style="display:none">
+    <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+      <span>📁</span> <span>Upload Video</span>
+    </button>
+    <span class="file-info-pill" id="fileInfoPill"></span>
+  </div>
+</div>
+
+<!-- Main 2-Column Locked Layout -->
+<div class="main-grid">
+
+  <!-- Left: Video Player Stage + Timeline -->
+  <div style="min-width:0">
+    <div class="stage-card">
+      <div class="stage-header">
+        <div class="stage-title">
+          <span style="color:var(--cyan)">&#128249;</span>
+          <span id="feedTitle">Street Violence (V_691)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="mode-switch">
+            <button class="mode-btn active" id="btnModeVideo" onclick="setPlayerMode('video')">📹 Native 30 FPS</button>
+            <button class="mode-btn" id="btnModeVision" onclick="setPlayerMode('vision')">⚡ AI Vision</button>
+          </div>
+          <div class="mono" style="color:var(--muted);font-size:11px">
+            <span id="timeTag">00:00.0</span> &nbsp;|&nbsp; <span id="frameCounter">-- / --</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Strictly Fixed Height Viewport Box -->
+      <div class="player-box" id="playerBox">
+        <!-- Native Full-Speed Video Player -->
+        <video id="nativeVideo" playsinline preload="auto" loop style="display:none"></video>
+
+        <!-- AI Keyframe Vision HUD -->
+        <img id="frameImg" alt="" style="display:none">
+
+        <!-- Live Cyber-HUD Overlay (Active during video playback) -->
+        <div class="live-hud" id="liveHud" style="display:none">
+          <div class="live-hud-top">
+            <span style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:.5px">ARGUS SURVEILLANCE &bull; CAM-01</span>
+            <span class="live-hud-badge safe" id="liveHudBadge">NORMAL: 0.0%</span>
+          </div>
+          <div class="live-hud-bottom">
+            <div class="live-hud-progress" id="hudProgressBar"></div>
+          </div>
+        </div>
+
+        <!-- Initial Placeholder -->
+        <div class="player-placeholder" id="placeholder">
+          <div style="font-size:36px;opacity:.3">&#128373;</div>
+          <div>Select a feed above or drop a video file here</div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div class="spinner-overlay" id="loadingOverlay">
+          <div class="spinner"></div>
+          <div style="font-size:11px;color:var(--cyan);font-weight:600" id="loadingText">Analyzing feed with ARGUS neural engine...</div>
+        </div>
+      </div>
+
+      <!-- Playback Controls Bar -->
+      <div class="controls-bar">
+        <button class="cbtn" onclick="stepBackward()">&#9664;</button>
+        <button class="cbtn play" id="playBtn" onclick="togglePlay()">&#9654; Play</button>
+        <button class="cbtn" onclick="stepForward()">&#9654;</button>
+        <button class="cbtn" id="loopBtn" onclick="toggleLoop()" style="color:var(--cyan)">&#128257; Loop</button>
+        <input type="range" class="scrubber-slider" id="scrubber" min="0" max="0" value="0" step="0.05" oninput="seekScrubber(+this.value)">
+        <select class="speed-select" id="speedSelect" onchange="setPlaybackSpeed(+this.value)">
+          <option value="0.5">0.5x</option>
+          <option value="1.0" selected>1.0x (Normal)</option>
+          <option value="1.5">1.5x</option>
+          <option value="2.0">2.0x</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Timeline Chart Under Player -->
+    <div class="chart-card">
+      <div class="chart-header">
+        <span style="font-weight:700">&#128200; Causal Anomaly Timeline</span>
+        <span style="color:var(--muted);font-size:10px">Click chart or drag scrubber to seek video</span>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chartCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Sidebar Telemetry Panel -->
+  <div class="side-panel">
+
+    <!-- Verdict Card -->
+    <div class="side-card">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Verdict</div>
+      <div class="verdict-box threat" id="verdictBox">
+        <div class="verdict-head" id="verdictHead">
+          <span class="pulse-dot" id="verdictDot" style="background:var(--red)"></span>
+          <span id="verdictText">CRITICAL THREAT</span>
+        </div>
+        <div class="verdict-desc" id="verdictDesc">Aggressive physical altercation detected.</div>
+      </div>
+
+      <div class="metric-grid">
+        <div class="metric-tile">
+          <div class="metric-title">Peak Score</div>
+          <div class="metric-num mono" id="metricPeak" style="color:var(--red)">96.8%</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-title">Average</div>
+          <div class="metric-num mono" id="metricMean">84.8%</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-title">Processing</div>
+          <div class="metric-num mono" id="metricFps" style="color:var(--green)">15.8 FPS</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-title">Frame Savings</div>
+          <div class="metric-num mono" id="metricReduction" style="color:var(--cyan)">-31.2%</div>
+        </div>
+      </div>
+
+      <!-- Dynamic Sensitivity Slider -->
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--muted)">Threat Sensitivity</span>
+          <span class="mono" id="threshLabel" style="font-size:11px;color:var(--cyan);font-weight:700">0.35 (Calibrated)</span>
+        </div>
+        <input type="range" class="scrubber-slider" id="threshSlider" min="0.10" max="0.85" step="0.05" value="0.35" style="width:100%" oninput="setThreshold(parseFloat(this.value))">
+        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:4px">
+          <span>High Recall (0.10)</span>
+          <span>Balanced (0.35)</span>
+          <span>Strict (0.85)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene Graph Card -->
+    <div class="side-card">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">&#128376; EdgeGAT Graph</div>
+      <div class="tech-row"><span class="tech-label">Detected Entities</span><span class="tech-val mono" id="techEntities">16 Boxes</span></div>
+      <div class="tech-row"><span class="tech-label">Relational Edges</span><span class="tech-val mono" id="techEdges" style="color:var(--cyan)">8 Pairs</span></div>
+      <div class="tech-row"><span class="tech-label">Token Pruning</span><span class="tech-val mono" style="color:var(--green)">50% (4x FLOPs)</span></div>
+      <div class="tech-row"><span class="tech-label">Sampling Stride</span><span class="tech-val mono" id="techStride">Dense &bull; T=32</span></div>
+    </div>
+
+    <!-- Latency Card -->
+    <div class="side-card">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">&#9201; Execution Profile</div>
+      <div class="tech-row"><span class="tech-label">Video Decode</span><span class="tech-val mono" id="techDecode">45.2 ms</span></div>
+      <div class="tech-row"><span class="tech-label">Neural Inference</span><span class="tech-val mono" id="techInfer">1.95 s</span></div>
+      <div class="tech-row"><span class="tech-label">Total Latency</span><span class="tech-val mono" id="techTotal" style="color:var(--cyan)">2.05 s</span></div>
+    </div>
+
+  </div>
+
+</div>
+
+</main>
+
+<footer>
+<div class="container">
+  <strong>ARGUS</strong> &bull; Adaptive Relational Graph Understanding for Surveillance &bull; School of CSE, VIT Vellore &bull; <a href="https://github.com/sameer-codes-ai/ARGUS-Adaptive-Relational-Graph-Understanding-System" target="_blank" style="color:var(--cyan);text-decoration:none">GitHub</a>
+</div>
+</footer>
+
+<!-- Paper Modal -->
+<div class="modal-overlay" id="paperModal">
+<div class="modal-box">
+  <button class="modal-close" onclick="document.getElementById('paperModal').classList.remove('show')">&times;</button>
+  <h3 style="font-size:15px;font-weight:800;margin-bottom:4px">&#128196; ARGUS Academic Paper</h3>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:12px">Omkar Joshi &amp; Sameer Kumar &bull; Vellore Institute of Technology</p>
+  <div class="bench-grid">
+    <div class="bench-cell"><div class="bench-num">0.7949</div><div class="bench-lbl">ROC-AUC</div></div>
+    <div class="bench-cell"><div class="bench-num">0.7449</div><div class="bench-lbl">Avg Precision</div></div>
+    <div class="bench-cell"><div class="bench-num">72.73%</div><div class="bench-lbl">Accuracy</div></div>
+    <div class="bench-cell"><div class="bench-num">0.7038</div><div class="bench-lbl">F1-Score</div></div>
+  </div>
+  <p style="font-size:11px;color:var(--muted);line-height:1.5">
+    ARGUS models surveillance anomalies as topological disruptions over explicit dynamic scene graphs with causal temporal memory. Evaluated on 605 clips across UCF-Crime &amp; RealLifeViolence.
+  </p>
+  <div style="margin-top:14px;text-align:right">
+    <a href="/docs/FinalPaper.md" target="_blank" class="hbtn" style="background:var(--cyan);color:#000;border-color:var(--cyan);font-weight:800;font-size:11px">Open Full Paper</a>
+  </div>
+</div>
+</div>
+
+<script>
+// State
+let playerMode = 'video'; // 'video' (30 FPS native) or 'vision' (annotated keyframes)
+let currentData = null;
+let frames = [];
+let timelinePoints = [];
+let frameIdx = 0;
+let isPlaying = false;
+let isLooping = true;
+let visionTimer = null;
+let visionFps = 10;
+let activeThreshold = 0.35;
+let activePreset = 'violence_691';
+let chart = null;
+
+const PRESETS = %%PRESETS_JSON%%;
+const nativeVideo = document.getElementById('nativeVideo');
+const frameImg = document.getElementById('frameImg');
+
+document.addEventListener('DOMContentLoaded', () => {
+  initChart();
+  initUpload();
+  initVideoEvents();
+  selectPreset('violence_691');
+});
+
+function initVideoEvents() {
+  nativeVideo.addEventListener('timeupdate', onVideoTimeUpdate);
+  nativeVideo.addEventListener('ended', onVideoEnded);
+  nativeVideo.addEventListener('play', () => {
+    isPlaying = true;
+    document.getElementById('playBtn').innerHTML = '&#9646;&#9646; Pause';
+  });
+  nativeVideo.addEventListener('pause', () => {
+    isPlaying = false;
+    document.getElementById('playBtn').innerHTML = '&#9654; Play';
+  });
+}
+
+function selectPreset(id) {
+  activePreset = id;
+  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  const btn = document.getElementById('pill-' + id);
+  if (btn) btn.classList.add('active');
+
+  const pObj = PRESETS.find(x => x.id === id);
+  if (pObj) document.getElementById('feedTitle').textContent = pObj.title;
+
+  document.getElementById('fileInfoPill').style.display = 'none';
+  runAnalysis({preset_id: id, threshold: activeThreshold, frames: 24});
+}
+
+function initUpload() {
+  const input = document.getElementById('fileInput');
+  const dropBox = document.getElementById('playerBox');
+
+  input.addEventListener('change', () => {
+    if (input.files && input.files.length > 0) handleFile(input.files[0]);
+  });
+
+  dropBox.addEventListener('dragover', e => { e.preventDefault(); dropBox.style.borderColor = 'var(--cyan)'; });
+  dropBox.addEventListener('dragleave', () => { dropBox.style.borderColor = '#1a2235'; });
+  dropBox.addEventListener('drop', e => {
+    e.preventDefault();
+    dropBox.style.borderColor = '#1a2235';
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+  });
+}
+
+function handleFile(file) {
+  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  const pill = document.getElementById('fileInfoPill');
+  pill.textContent = file.name + ' (' + (file.size/1024/1024).toFixed(1) + 'MB)';
+  pill.style.display = 'inline';
+  document.getElementById('feedTitle').textContent = 'Upload: ' + file.name;
+
+  const fd = new FormData();
+  fd.append('video_file', file);
+  fd.append('threshold', String(activeThreshold));
+  fd.append('frames', '32'); // High temporal resolution
+  runAnalysis(fd, true);
+}
+
+async function runAnalysis(payload, isFormData) {
+  pauseAll();
+  showLoading(true);
+  try {
+    const opts = isFormData ? {method:'POST', body:payload} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)};
+    const res = await fetch('/api/analyze', opts);
+    const data = await res.json();
+    if (data.status === 'success') {
+      applyData(data);
+    } else {
+      alert('Analysis error: ' + (data.message || 'Unknown'));
+    }
+  } catch(e) {
+    alert('Connection error: ' + e.message);
+  }
+  showLoading(false);
+}
+
+function applyData(d) {
+  currentData = d;
+  frames = d.frames || [];
+  timelinePoints = d.timeline || [];
+  frameIdx = 0;
+
+  // Setup video source if available
+  if (d.video_url) {
+    nativeVideo.src = d.video_url;
+    nativeVideo.load();
+    setPlayerMode('video');
+  } else {
+    setPlayerMode('vision');
+  }
+
+  // Update verdict with active threshold
+  updateVerdict(d.peak_score, d.mean_score);
+
+  // Metrics
+  document.getElementById('metricFps').textContent = d.fps + ' FPS';
+  document.getElementById('metricReduction').textContent = '-' + d.frame_reduction_pct + '%';
+  document.getElementById('techEntities').textContent = d.num_entities + ' Entities';
+  document.getElementById('techEdges').textContent = Math.max(1, Math.round(d.num_entities * 0.75)) + ' Pairs';
+  document.getElementById('techStride').textContent = (d.total_input_frames || 32) + ' Fr &bull; ' + (d.native_fps || 25) + ' FPS';
+  document.getElementById('techDecode').textContent = d.timings.decode_ms + ' ms';
+  document.getElementById('techInfer').textContent = (d.timings.infer_ms/1000).toFixed(2) + ' s';
+  document.getElementById('techTotal').textContent = (d.timings.total_ms/1000).toFixed(2) + ' s';
+
+  // Build Chart
+  updateChartData();
+
+  // Scrubber bounds
+  const dur = d.duration_sec || (frames.length ? frames[frames.length - 1].time_sec : 1);
+  const scrubber = document.getElementById('scrubber');
+  scrubber.min = 0;
+  scrubber.max = dur;
+  scrubber.value = 0;
+
+  // Preload vision images
+  frames.forEach(f => { const im = new Image(); im.src = f.data_url; });
+
+  // Start playback
+  if (playerMode === 'video' && d.video_url) {
+    nativeVideo.play().catch(() => {});
+  } else {
+    showFrame(0);
+    playVision();
+  }
+}
+
+function updateVerdict(peakScore, meanScore) {
+  const vb = document.getElementById('verdictBox');
+  const vt = document.getElementById('verdictText');
+  const vd = document.getElementById('verdictDesc');
+  const dot = document.getElementById('verdictDot');
+  const mp = document.getElementById('metricPeak');
+  const mm = document.getElementById('metricMean');
+
+  mp.textContent = (peakScore * 100).toFixed(1) + '%';
+  mm.textContent = (meanScore * 100).toFixed(1) + '%';
+
+  if (peakScore >= 0.75) {
+    vb.className = 'verdict-box threat';
+    vt.textContent = 'CRITICAL THREAT';
+    vt.style.color = 'var(--red)';
+    dot.style.background = 'var(--red)';
+    mp.style.color = 'var(--red)';
+    vd.textContent = 'High-velocity aggressive physical altercation / assault detected.';
+  } else if (peakScore >= 0.50) {
+    vb.className = 'verdict-box high';
+    vt.textContent = 'HIGH THREAT';
+    vt.style.color = 'var(--amber)';
+    dot.style.background = 'var(--amber)';
+    mp.style.color = 'var(--amber)';
+    vd.textContent = 'Hostile spatial convergence or suspicious confrontation detected.';
+  } else if (peakScore >= activeThreshold) {
+    vb.className = 'verdict-box elevated';
+    vt.textContent = 'ELEVATED CONFLICT';
+    vt.style.color = 'var(--cyan)';
+    dot.style.background = 'var(--cyan)';
+    mp.style.color = 'var(--cyan)';
+    vd.textContent = 'Unusual kinetic activity detected exceeding baseline threshold.';
+  } else {
+    vb.className = 'verdict-box safe';
+    vt.textContent = 'NORMAL SURVEILLANCE';
+    vt.style.color = 'var(--green)';
+    dot.style.background = 'var(--green)';
+    mp.style.color = 'var(--green)';
+    vd.textContent = 'Ambient pedestrian activity within normal safe parameters.';
+  }
+}
+
+function setThreshold(val) {
+  activeThreshold = val;
+  document.getElementById('threshLabel').textContent = val.toFixed(2) + (Math.abs(val - 0.35) < 1e-3 ? ' (Calibrated)' : '');
+
+  if (currentData) {
+    updateVerdict(currentData.peak_score, currentData.mean_score);
+    if (chart && chart.data.datasets.length > 1) {
+      chart.data.datasets[1].data = Array(chart.data.labels.length).fill(val);
+      chart.data.datasets[1].label = 'Threshold (' + val.toFixed(2) + ')';
+      chart.update('none');
+    }
+    // Update live HUD
+    if (playerMode === 'video') {
+      const cur = nativeVideo.currentTime;
+      updateLiveHud(getScoreAtTime(cur));
+    }
+  }
+}
+
+function setPlayerMode(mode) {
+  playerMode = mode;
+  document.getElementById('btnModeVideo').classList.toggle('active', mode === 'video');
+  document.getElementById('btnModeVision').classList.toggle('active', mode === 'vision');
+
+  const placeholder = document.getElementById('placeholder');
+  const liveHud = document.getElementById('liveHud');
+
+  if (mode === 'video' && currentData && currentData.video_url) {
+    pauseVision();
+    frameImg.style.display = 'none';
+    nativeVideo.style.display = 'block';
+    liveHud.style.display = 'flex';
+    placeholder.style.display = 'none';
+    nativeVideo.play().catch(() => {});
+  } else {
+    nativeVideo.pause();
+    nativeVideo.style.display = 'none';
+    liveHud.style.display = 'none';
+    frameImg.style.display = 'block';
+    placeholder.style.display = 'none';
+    showFrame(frameIdx);
+    playVision();
+  }
+}
+
+function onVideoTimeUpdate() {
+  if (playerMode !== 'video' || !nativeVideo) return;
+  const cur = nativeVideo.currentTime;
+  const dur = nativeVideo.duration || (currentData ? currentData.duration_sec : 1) || 1;
+
+  // Format time tags
+  const curMin = Math.floor(cur / 60);
+  const curSec = (cur % 60).toFixed(1);
+  const durMin = Math.floor(dur / 60);
+  const durSec = (dur % 60).toFixed(1);
+  document.getElementById('timeTag').textContent =
+    String(curMin).padStart(2,'0') + ':' + String(curSec).padStart(4,'0') + ' / ' +
+    String(durMin).padStart(2,'0') + ':' + String(durSec).padStart(4,'0');
+  document.getElementById('frameCounter').textContent = 'FULL 30 FPS';
+
+  // Scrubber sync
+  const scrubber = document.getElementById('scrubber');
+  scrubber.value = cur;
+
+  // Real-time HUD anomaly score interpolation
+  const score = getScoreAtTime(cur);
+  updateLiveHud(score);
+
+  // Sync chart point
+  highlightChartAtTime(cur);
+}
+
+function onVideoEnded() {
+  if (isLooping) {
+    nativeVideo.currentTime = 0;
+    nativeVideo.play().catch(() => {});
+  } else {
+    isPlaying = false;
+    document.getElementById('playBtn').innerHTML = '&#9654; Play';
+  }
+}
+
+function getScoreAtTime(t) {
+  if (!timelinePoints || timelinePoints.length === 0) return 0.0;
+  if (timelinePoints.length === 1) return timelinePoints[0].score;
+  if (t <= timelinePoints[0].time) return timelinePoints[0].score;
+  const last = timelinePoints[timelinePoints.length - 1];
+  if (t >= last.time) return last.score;
+
+  for (let i = 0; i < timelinePoints.length - 1; i++) {
+    const p1 = timelinePoints[i];
+    const p2 = timelinePoints[i+1];
+    if (t >= p1.time && t <= p2.time) {
+      const alpha = (t - p1.time) / (p2.time - p1.time + 1e-6);
+      return p1.score + alpha * (p2.score - p1.score);
+    }
+  }
+  return timelinePoints[0].score;
+}
+
+function updateLiveHud(score) {
+  const badge = document.getElementById('liveHudBadge');
+  const bar = document.getElementById('hudProgressBar');
+  const pbox = document.getElementById('playerBox');
+  const pct = (score * 100).toFixed(1);
+
+  bar.style.width = Math.min(100, Math.max(0, score * 100)) + '%';
+
+  if (score >= 0.75) {
+    badge.className = 'live-hud-badge critical';
+    badge.textContent = 'CRITICAL: ' + pct + '% [ASSAULT]';
+    bar.style.backgroundColor = 'var(--red)';
+    pbox.classList.add('alert-flash');
+  } else if (score >= 0.50) {
+    badge.className = 'live-hud-badge high';
+    badge.textContent = 'HIGH THREAT: ' + pct + '%';
+    bar.style.backgroundColor = 'var(--amber)';
+    pbox.classList.remove('alert-flash');
+  } else if (score >= activeThreshold) {
+    badge.className = 'live-hud-badge elevated';
+    badge.textContent = 'ELEVATED: ' + pct + '%';
+    bar.style.backgroundColor = 'var(--cyan)';
+    pbox.classList.remove('alert-flash');
+  } else {
+    badge.className = 'live-hud-badge safe';
+    badge.textContent = 'NORMAL: ' + pct + '%';
+    bar.style.backgroundColor = 'var(--green)';
+    pbox.classList.remove('alert-flash');
+  }
+}
+
+function showFrame(i) {
+  if (!frames.length) return;
+  frameIdx = Math.max(0, Math.min(i, frames.length - 1));
+  const f = frames[frameIdx];
+
+  frameImg.src = f.data_url;
+  frameImg.style.display = 'block';
+  document.getElementById('placeholder').style.display = 'none';
+
+  document.getElementById('scrubber').value = f.time_sec || frameIdx;
+  document.getElementById('frameCounter').textContent =
+    String(frameIdx + 1).padStart(2, '0') + ' / ' + String(frames.length).padStart(2, '0');
+  document.getElementById('timeTag').textContent = f.time_str || '00:00.0';
+
+  if (chart) {
+    chart.data.datasets[0].pointRadius = frames.map((_, j) => j === frameIdx ? 6 : 2.5);
+    chart.update('none');
+  }
+}
+
+function togglePlay() {
+  if (playerMode === 'video' && nativeVideo.src) {
+    nativeVideo.paused ? nativeVideo.play() : nativeVideo.pause();
+  } else {
+    isPlaying ? pauseVision() : playVision();
+  }
+}
+
+function playVision() {
+  if (!frames.length) return;
+  isPlaying = true;
+  document.getElementById('playBtn').innerHTML = '&#9646;&#9646; Pause';
+  clearInterval(visionTimer);
+  visionTimer = setInterval(() => {
+    if (frameIdx >= frames.length - 1) {
+      if (isLooping) { frameIdx = 0; } else { pauseVision(); return; }
+    } else {
+      frameIdx++;
+    }
+    showFrame(frameIdx);
+  }, 1000 / visionFps);
+}
+
+function pauseVision() {
+  isPlaying = false;
+  clearInterval(visionTimer);
+  document.getElementById('playBtn').innerHTML = '&#9654; Play';
+}
+
+function pauseAll() {
+  nativeVideo.pause();
+  pauseVision();
+}
+
+function stepBackward() {
+  if (playerMode === 'video' && nativeVideo.src) {
+    nativeVideo.pause();
+    nativeVideo.currentTime = Math.max(0, nativeVideo.currentTime - 0.2);
+  } else {
+    pauseVision();
+    showFrame(frameIdx - 1);
+  }
+}
+
+function stepForward() {
+  if (playerMode === 'video' && nativeVideo.src) {
+    nativeVideo.pause();
+    nativeVideo.currentTime = Math.min(nativeVideo.duration || 10, nativeVideo.currentTime + 0.2);
+  } else {
+    pauseVision();
+    showFrame(frameIdx + 1);
+  }
+}
+
+function seekScrubber(val) {
+  if (playerMode === 'video' && nativeVideo.src) {
+    nativeVideo.currentTime = val;
+  } else {
+    pauseVision();
+    // Find closest frame to val
+    let bestIdx = 0;
+    let minDiff = Infinity;
+    frames.forEach((f, idx) => {
+      const diff = Math.abs((f.time_sec || 0) - val);
+      if (diff < minDiff) { minDiff = diff; bestIdx = idx; }
+    });
+    showFrame(bestIdx);
+  }
+}
+
+function toggleLoop() {
+  isLooping = !isLooping;
+  nativeVideo.loop = isLooping;
+  const btn = document.getElementById('loopBtn');
+  btn.textContent = isLooping ? '\u{1F501} Loop' : '\u27A1 Once';
+  btn.style.color = isLooping ? 'var(--cyan)' : 'var(--muted)';
+}
+
+function setPlaybackSpeed(val) {
+  nativeVideo.playbackRate = val;
+  visionFps = 10 * val;
+  if (playerMode === 'vision' && isPlaying) playVision();
+}
+
+function showLoading(show) {
+  document.getElementById('loadingOverlay').className = 'spinner-overlay' + (show ? ' show' : '');
+}
+
+function highlightChartAtTime(t) {
+  if (!chart || !timelinePoints.length) return;
+  let bestIdx = 0;
+  let minDiff = Infinity;
+  timelinePoints.forEach((p, idx) => {
+    const diff = Math.abs(p.time - t);
+    if (diff < minDiff) { minDiff = diff; bestIdx = idx; }
+  });
+  chart.data.datasets[0].pointRadius = timelinePoints.map((_, j) => j === bestIdx ? 6 : 2.5);
+  chart.update('none');
+}
+
+function updateChartData() {
+  if (!chart) return;
+  const pts = timelinePoints.length ? timelinePoints : frames.map(f => ({time: f.time_sec || 0, score: f.score}));
+  const labels = pts.map(p => p.time.toFixed(1) + 's');
+  const scores = pts.map(p => p.score);
+  const isAnom = currentData ? currentData.is_anomaly : false;
+  const cColor = isAnom ? '#ff2e54' : '#00e676';
+  const cBg = isAnom ? 'rgba(255,46,84,.15)' : 'rgba(0,230,118,.15)';
+
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = scores;
+  chart.data.datasets[0].borderColor = cColor;
+  chart.data.datasets[0].backgroundColor = cBg;
+  chart.data.datasets[0].pointBackgroundColor = cColor;
+  chart.data.datasets[1].data = Array(scores.length).fill(activeThreshold);
+  chart.data.datasets[1].label = 'Threshold (' + activeThreshold.toFixed(2) + ')';
+  chart.update();
+}
+
+function initChart() {
+  const ctx = document.getElementById('chartCanvas').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Anomaly Score',
+          data: [],
+          borderColor: '#00e5ff',
+          backgroundColor: 'rgba(0,229,255,.15)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.3,
+          pointRadius: 2.5,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#00e5ff'
+        },
+        {
+          label: 'Threshold (0.35)',
+          data: [],
+          borderColor: '#ffab00',
+          borderDash: [5, 4],
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      onClick: (e, elems) => {
+        if (elems.length && timelinePoints[elems[0].index]) {
+          const targetTime = timelinePoints[elems[0].index].time;
+          if (playerMode === 'video' && nativeVideo.src) {
+            nativeVideo.currentTime = targetTime;
+          } else {
+            showFrame(elems[0].index);
+          }
+        }
+      },
+      scales: {
+        y: { min: 0, max: 1, grid: {color: 'rgba(255,255,255,.05)'}, ticks: {color: '#64748b', font:{size:9}, callback: v => (v*100)+'%'} },
+        x: { grid: {color: 'rgba(255,255,255,.05)'}, ticks: {color: '#64748b', font:{size:9}} }
+      },
+      plugins: {
+        legend: { labels: {color: '#94a3b8', font:{size:10}} },
+        tooltip: { callbacks: { label: c => 'Anomaly: ' + (c.raw*100).toFixed(1) + '%' } }
+      }
+    }
+  });
+}
+</script>
+</body>
+</html>
