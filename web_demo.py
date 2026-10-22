@@ -38,6 +38,13 @@ from argus import ARGUS, AlertDispatcher, generate_dashboard_html
 from argus.config import ARGUSConfig
 from argus.data import load_clip_from_path, find_frame_files
 
+CLIENT_DISCONNECT_ERRORS = (
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
+    ConnectionError,
+)
+
 # Global Model & State
 GLOBAL_MODEL: Optional[ARGUS] = None
 GLOBAL_CONFIG: Optional[ARGUSConfig] = None
@@ -49,65 +56,60 @@ PRESET_CACHE: Dict[str, dict] = {}
 PRESET_DATASETS = [
     {
         "id": "violence_691",
-        "title": "Street Violence & Physical Assault",
-        "category": "Violence / Assault",
+        "title": "CAM-01 • Street Altercation & Physical Confrontation",
+        "category": "Violent Incident",
         "dataset": "RealLifeViolence V_691",
-        "expected": "CRITICAL THREAT (96.8%)",
-        "badge_color": "#ff2e54",
-        "badge_bg": "rgba(255, 46, 84, 0.15)",
-        "icon": "🚨",
-        "description": "High-velocity physical altercation with multiple persons converging and aggressive kinetic strikes.",
+        "expected": "CRITICAL INCIDENT (96.8%)",
+        "badge_color": "#f43f5e",
+        "badge_bg": "rgba(244, 63, 94, 0.12)",
+        "description": "High-velocity physical altercation with multiple persons converging and anomalous kinetic strikes.",
         "path": r"demo_samples\sample_violence_V691.mp4",
         "fallback_path": r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\datasets\RealLifeViolenceDataset\ViolenceP\V_691"
     },
     {
         "id": "violence_308",
-        "title": "Close-Quarter Physical Brawl",
-        "category": "Violence / Conflict",
+        "title": "CAM-02 • Corridor Dispute & Close-Quarter Altercation",
+        "category": "Violent Conflict",
         "dataset": "RealLifeViolence V_308",
-        "expected": "CRITICAL THREAT (96.6%)",
-        "badge_color": "#ff2e54",
-        "badge_bg": "rgba(255, 46, 84, 0.15)",
-        "icon": "⚠️",
+        "expected": "CRITICAL INCIDENT (96.6%)",
+        "badge_color": "#f43f5e",
+        "badge_bg": "rgba(244, 63, 94, 0.12)",
         "description": "Escalating physical altercation between individuals in tight public corridor.",
         "path": r"demo_samples\sample_violence_V308.mp4",
         "fallback_path": r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\datasets\RealLifeViolenceDataset\ViolenceP\V_308"
     },
     {
         "id": "robbery_087",
-        "title": "Commercial Facility Robbery",
-        "category": "Property Crime",
+        "title": "CAM-03 • Commercial Facility Retail Incident",
+        "category": "Property Incident",
         "dataset": "UCF-Crime Robbery087",
-        "expected": "HIGH THREAT (68.8%)",
-        "badge_color": "#ffab00",
-        "badge_bg": "rgba(255, 171, 0, 0.15)",
-        "icon": "🛑",
+        "expected": "ELEVATED CONFLICT (68.8%)",
+        "badge_color": "#f59e0b",
+        "badge_bg": "rgba(245, 158, 11, 0.12)",
         "description": "Rapid suspicious spatial convergence and forced item extraction in commercial environment.",
         "path": r"demo_samples\sample_robbery_087.mp4",
         "fallback_path": r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\datasets\organized\ucf\train\Robbery\Robbery087_x264"
     },
     {
         "id": "normal_344",
-        "title": "Public Pedestrian Walkway",
-        "category": "Normal Surveillance",
+        "title": "CAM-04 • Pedestrian Thoroughfare & Sidewalk",
+        "category": "Nominal Surveillance",
         "dataset": "RealLifeViolence NV_344",
-        "expected": "NORMAL ACTIVITY (0.7%)",
-        "badge_color": "#00e676",
-        "badge_bg": "rgba(0, 230, 118, 0.15)",
-        "icon": "🛡️",
+        "expected": "NOMINAL SURVEILLANCE (0.7%)",
+        "badge_color": "#10b981",
+        "badge_bg": "rgba(16, 185, 129, 0.12)",
         "description": "Pedestrians walking normally along public sidewalk with safe physical distance.",
         "path": r"demo_samples\sample_normal_NV344.mp4",
         "fallback_path": r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\datasets\RealLifeViolenceDataset\NonViolenceP\NV_344"
     },
     {
         "id": "normal_950",
-        "title": "Peaceful Public Plaza",
-        "category": "Normal Surveillance",
+        "title": "CAM-05 • Public Plaza & Open Ambient Space",
+        "category": "Nominal Surveillance",
         "dataset": "RealLifeViolence NV_950",
-        "expected": "NORMAL ACTIVITY (0.5%)",
-        "badge_color": "#00e676",
-        "badge_bg": "rgba(0, 230, 118, 0.15)",
-        "icon": "✅",
+        "expected": "NOMINAL SURVEILLANCE (0.5%)",
+        "badge_color": "#10b981",
+        "badge_bg": "rgba(16, 185, 129, 0.12)",
         "description": "Ambient public space with stationary and normal-paced pedestrians.",
         "path": r"demo_samples\sample_normal_NV950.mp4",
         "fallback_path": r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\datasets\RealLifeViolenceDataset\NonViolenceP\NV_950"
@@ -177,27 +179,24 @@ def annotate_frame(
     orig_idx: int
 ) -> np.ndarray:
     """
-    Renders high-definition surveillance HUD, actor bounding boxes, and relational scene graph edges.
+    Renders clean, high-definition surveillance OSD, actor bounding brackets, and relational scene graph edges.
     """
     h, w = frame_bgr.shape[:2]
     annotated = frame_bgr.copy()
 
     is_anomaly = score >= threshold
-    if score >= 0.85:
-        theme_bgr = (84, 46, 255)       # Electric Crimson / Red (BGR)
-        status_text = "CRITICAL ALERT: PHYSICAL AGGRESSION"
-    elif score >= 0.70:
-        theme_bgr = (0, 171, 255)       # Amber / Orange
-        status_text = "HIGH THREAT: SUSPICIOUS CONVERGENCE"
+    if score >= 0.75:
+        theme_bgr = (94, 63, 244)       # Crimson Red #f43f5e in BGR
+        status_text = "CRITICAL ALERT: KINETIC ALTERCATION"
+    elif score >= 0.50:
+        theme_bgr = (11, 158, 245)      # Warm Amber #f59e0b in BGR
+        status_text = "ELEVATED RISK: SPATIAL CONVERGENCE"
     elif score >= threshold:
-        theme_bgr = (0, 229, 255)       # Yellow-Cyan
-        status_text = "ELEVATED CONFLICT DETECTED"
-    elif score >= 0.20:
-        theme_bgr = (255, 200, 0)       # Cyan
-        status_text = "MONITORING ACTIVE"
+        theme_bgr = (233, 165, 14)      # Sky Blue #0ea5e9 in BGR
+        status_text = "MONITORED: UNUSUAL MOTION DETECTED"
     else:
-        theme_bgr = (118, 230, 0)       # Emerald Green
-        status_text = "NORMAL SURVEILLANCE ACTIVITY"
+        theme_bgr = (129, 185, 16)      # Emerald Green #10b981 in BGR
+        status_text = "NOMINAL SURVEILLANCE ACTIVITY"
 
     # Extract & scale entity bounding boxes
     box_coords = []
@@ -221,40 +220,53 @@ def annotate_frame(
                 dist = np.hypot(cx_i - cx_j, cy_i - cy_j) / max(w, 1)
 
                 if dist < 0.42:
-                    edge_color = theme_bgr if is_anomaly else (160, 160, 160)
+                    edge_color = theme_bgr if is_anomaly else (120, 130, 145)
                     thickness = 2 if is_anomaly else 1
                     cv2.line(annotated, (cx_i, cy_i), (cx_j, cy_j), edge_color, thickness, cv2.LINE_AA)
                     mx, my = (cx_i + cx_j) // 2, (cy_i + cy_j) // 2
-                    tag = "P2P Rel" if is_anomaly else "Prox"
-                    cv2.putText(annotated, tag, (mx - 15, my - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.36, edge_color, 1, cv2.LINE_AA)
+                    tag = "REL" if is_anomaly else "PROX"
+                    cv2.putText(annotated, tag, (mx - 10, my - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, edge_color, 1, cv2.LINE_AA)
 
         # Draw Bounding Boxes with Actor Labels
         for idx, (x1, y1, x2, y2, cx, cy) in enumerate(box_coords):
-            label = f"Person #{idx + 1}" if idx % 2 == 0 else f"Object #{idx + 1}"
-            box_col = theme_bgr if is_anomaly else (220, 180, 40)
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_col, 2)
-            cv2.rectangle(annotated, (x1, max(0, y1 - 20)), (x1 + 80, max(0, y1)), box_col, -1)
-            cv2.putText(annotated, label, (x1 + 4, max(14, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
+            label = f"PERSON {idx + 1:02d}" if idx % 2 == 0 else f"OBJECT {idx + 1:02d}"
+            box_col = theme_bgr if is_anomaly else (180, 170, 140)
 
-    # ── Top Surveillance HUD Bar ──────────────────────────────────────────
+            # Minimalist corner brackets for professional CCTV look
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_col, 1)
+            tick = min(12, max(4, (x2 - x1) // 4))
+            cv2.line(annotated, (x1, y1), (x1 + tick, y1), box_col, 2)
+            cv2.line(annotated, (x1, y1), (x1, y1 + tick), box_col, 2)
+            cv2.line(annotated, (x2, y1), (x2 - tick, y1), box_col, 2)
+            cv2.line(annotated, (x2, y1), (x2, y1 + tick), box_col, 2)
+            cv2.line(annotated, (x1, y2), (x1 + tick, y2), box_col, 2)
+            cv2.line(annotated, (x1, y2), (x1, y2 - tick), box_col, 2)
+            cv2.line(annotated, (x2, y2), (x2 - tick, y2), box_col, 2)
+            cv2.line(annotated, (x2, y2), (x2, y2 - tick), box_col, 2)
+
+            # Dark translucent label pill
+            cv2.rectangle(annotated, (x1, max(0, y1 - 18)), (x1 + 72, max(0, y1)), (10, 14, 20), -1)
+            cv2.putText(annotated, label, (x1 + 4, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (220, 230, 240), 1, cv2.LINE_AA)
+
+    # ── Top Surveillance OSD Bar ──────────────────────────────────────────
     overlay = annotated.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 48), (8, 12, 20), -1)
-    cv2.addWeighted(overlay, 0.88, annotated, 0.12, 0, annotated)
-    cv2.line(annotated, (0, 48), (w, 48), theme_bgr, 2)
+    cv2.rectangle(overlay, (0, 0), (w, 42), (10, 14, 22), -1)
+    cv2.addWeighted(overlay, 0.85, annotated, 0.15, 0, annotated)
+    cv2.line(annotated, (0, 42), (w, 42), (35, 45, 60), 1)
 
     # System Status & Frame Index
-    cv2.putText(annotated, "ARGUS AI SURVEILLANCE | CAM-01 (CCTV-RTSP)", (14, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 229, 255), 1, cv2.LINE_AA)
-    frame_meta = f"SAMPLE {frame_idx + 1:02d}/{total_frames:02d} | KEYFRAME #{orig_idx:03d}"
-    cv2.putText(annotated, frame_meta, (14, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (148, 163, 184), 1, cv2.LINE_AA)
+    cv2.putText(annotated, "CAM-01 [LIVE]  RTSP 1080P  H.264", (14, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 195, 215), 1, cv2.LINE_AA)
+    frame_meta = f"ARGUS EDGE-V2  |  SMPL {frame_idx + 1:02d}/{total_frames:02d}  |  KF #{orig_idx:03d}"
+    cv2.putText(annotated, frame_meta, (14, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (120, 135, 155), 1, cv2.LINE_AA)
 
     # Threat Banner on Top-Right
     score_pct = f"ANOMALY: {score * 100:.1f}%"
-    cv2.putText(annotated, score_pct, (w - 220, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(annotated, status_text, (w - 220, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.38, theme_bgr, 1, cv2.LINE_AA)
+    cv2.putText(annotated, score_pct, (w - 220, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (240, 245, 255), 1, cv2.LINE_AA)
+    cv2.putText(annotated, status_text, (w - 220, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.32, theme_bgr, 1, cv2.LINE_AA)
 
     # Bottom Progress Anomaly Line
     bar_w = int(w * min(score, 1.0))
-    cv2.rectangle(annotated, (0, h - 5), (bar_w, h), theme_bgr, -1)
+    cv2.rectangle(annotated, (0, h - 3), (bar_w, h), theme_bgr, -1)
 
     return annotated
 
@@ -274,60 +286,80 @@ def compute_severity(peak_score: float, threshold: float = 0.35) -> str:
 def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
     """Handles HTTP 206 Partial Content range requests for smooth HTML5 video scrubbing."""
     if not file_path.exists() or not file_path.is_file():
-        handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
+        try:
+            handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
+        except CLIENT_DISCONNECT_ERRORS:
+            pass
         return
 
-    file_size = file_path.stat().st_size
-    mime, _ = mimetypes.guess_type(str(file_path))
-    content_type = mime or 'application/octet-stream'
+    try:
+        file_size = file_path.stat().st_size
+        mime, _ = mimetypes.guess_type(str(file_path))
+        content_type = mime or 'application/octet-stream'
 
-    range_header = handler.headers.get('Range')
-    if range_header and range_header.startswith('bytes='):
-        try:
-            range_val = range_header[6:].strip()
-            parts = range_val.split('-')
-            start = int(parts[0]) if parts[0] else 0
-            end = int(parts[1]) if parts[1] else file_size - 1
-            start = max(0, min(start, file_size - 1))
-            end = max(start, min(end, file_size - 1))
-            length = end - start + 1
+        range_header = handler.headers.get('Range')
+        if range_header and range_header.startswith('bytes='):
+            try:
+                range_val = range_header[6:].strip()
+                parts = range_val.split('-')
+                start = int(parts[0]) if parts[0] else 0
+                end = int(parts[1]) if parts[1] else file_size - 1
 
-            handler.send_response(HTTPStatus.PARTIAL_CONTENT)
-            handler.send_header('Content-Type', content_type)
-            handler.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
-            handler.send_header('Content-Length', str(length))
-            handler.send_header('Accept-Ranges', 'bytes')
-            handler.send_header('Access-Control-Allow-Origin', '*')
-            handler.end_headers()
+                if start >= file_size or start > end:
+                    handler.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    handler.send_header('Content-Range', f'bytes */{file_size}')
+                    handler.end_headers()
+                    return
 
-            with open(file_path, 'rb') as f:
-                f.seek(start)
-                remaining = length
-                chunk_sz = 64 * 1024
-                while remaining > 0:
-                    read_len = min(remaining, chunk_sz)
-                    data = f.read(read_len)
-                    if not data:
-                        break
-                    handler.wfile.write(data)
-                    remaining -= len(data)
-            return
-        except Exception:
-            pass
+                start = max(0, min(start, file_size - 1))
+                end = max(start, min(end, file_size - 1))
+                length = end - start + 1
 
-    # Full content fallback (200 OK)
-    handler.send_response(HTTPStatus.OK)
-    handler.send_header('Content-Type', content_type)
-    handler.send_header('Content-Length', str(file_size))
-    handler.send_header('Accept-Ranges', 'bytes')
-    handler.send_header('Access-Control-Allow-Origin', '*')
-    handler.end_headers()
-    with open(file_path, 'rb') as f:
-        while True:
-            chunk = f.read(64 * 1024)
-            if not chunk:
-                break
-            handler.wfile.write(chunk)
+                handler.send_response(HTTPStatus.PARTIAL_CONTENT)
+                handler.send_header('Content-Type', content_type)
+                handler.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+                handler.send_header('Content-Length', str(length))
+                handler.send_header('Accept-Ranges', 'bytes')
+                handler.send_header('Access-Control-Allow-Origin', '*')
+                handler.end_headers()
+
+                with open(file_path, 'rb') as f:
+                    f.seek(start)
+                    remaining = length
+                    chunk_sz = 64 * 1024
+                    while remaining > 0:
+                        read_len = min(remaining, chunk_sz)
+                        data = f.read(read_len)
+                        if not data:
+                            break
+                        handler.wfile.write(data)
+                        remaining -= len(data)
+                return
+            except CLIENT_DISCONNECT_ERRORS:
+                # Normal client abort/disconnect during video scrub or navigation
+                return
+            except Exception:
+                # If an error occurred during range processing, exit cleanly
+                return
+
+        # Full content fallback (200 OK)
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header('Content-Type', content_type)
+        handler.send_header('Content-Length', str(file_size))
+        handler.send_header('Accept-Ranges', 'bytes')
+        handler.send_header('Access-Control-Allow-Origin', '*')
+        handler.end_headers()
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(64 * 1024)
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+    except CLIENT_DISCONNECT_ERRORS:
+        # Client closed socket during transmission
+        pass
+    except Exception:
+        pass
 
 
 def process_video_inference(
@@ -538,6 +570,20 @@ def get_frontend_html() -> str:
     return raw.replace('%%PRESETS_JSON%%', json.dumps(PRESET_DATASETS))
 
 
+class SafeThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that gracefully handles client disconnects (video scrubs, tab closes)."""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc_type, exc_val, _ = sys.exc_info()
+        if exc_type is not None:
+            if issubclass(exc_type, CLIENT_DISCONNECT_ERRORS):
+                return
+            if isinstance(exc_val, OSError) and getattr(exc_val, 'winerror', None) in (10053, 10054):
+                return
+        super().handle_error(request, client_address)
+
+
 class ARGUSWebHandler(BaseHTTPRequestHandler):
     """Robust multi-threaded HTTP request handler for the ARGUS web demo."""
 
@@ -546,22 +592,28 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
         pass
 
     def send_json_response(self, data: dict, status: int = HTTPStatus.OK):
-        body = json.dumps(data).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = json.dumps(data).encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.end_headers()
+            self.wfile.write(body)
+        except CLIENT_DISCONNECT_ERRORS:
+            pass
 
     def do_OPTIONS(self):
-        self.send_response(HTTPStatus.OK)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.end_headers()
+        except CLIENT_DISCONNECT_ERRORS:
+            pass
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -572,11 +624,14 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 body = get_frontend_html().encode('utf-8')
             except Exception as e:
                 body = f"<h1>ARGUS Frontend Loading Error</h1><pre>{e}</pre>".encode('utf-8')
-            self.send_response(HTTPStatus.OK)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except CLIENT_DISCONNECT_ERRORS:
+                pass
             return
 
         elif path == '/api/presets':
@@ -606,7 +661,10 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 serve_file_ranged(self, local_file)
                 return
 
-        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+        try:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+        except CLIENT_DISCONNECT_ERRORS:
+            pass
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -700,7 +758,10 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                     self.send_json_response({"status": "error", "message": f"Inference failed: {e}"}, status=500)
                 return
 
-        self.send_error(HTTPStatus.NOT_FOUND, "API Endpoint Not Found")
+        try:
+            self.send_error(HTTPStatus.NOT_FOUND, "API Endpoint Not Found")
+        except CLIENT_DISCONNECT_ERRORS:
+            pass
 
 
 def main():
@@ -717,7 +778,7 @@ def main():
     warm_preset_cache()
 
     server_address = (args.host, args.port)
-    httpd = ThreadingHTTPServer(server_address, ARGUSWebHandler)
+    httpd = SafeThreadingHTTPServer(server_address, ARGUSWebHandler)
 
     print("\n" + "=" * 66)
     print("      [+]  ARGUS AUTONOMOUS SURVEILLANCE PLATFORM ONLINE  [+]      ")

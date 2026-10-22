@@ -3,580 +3,922 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ARGUS — Surveillance AI Intelligence Console</title>
+<title>ARGUS — Security Intelligence & Surveillance Operations Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#070a10;
-  --surface:#0e1422;
-  --surface-hover:#162035;
-  --border:#1c273e;
-  --text:#f1f5f9;
-  --muted:#718096;
-  --cyan:#00e5ff;
-  --red:#ff2e54;
-  --green:#00e676;
-  --amber:#ffab00;
+:root {
+  --bg-base: #080b11;
+  --bg-subtle: #0d121c;
+  --bg-surface: #121824;
+  --bg-surface-hover: #172030;
+  --bg-surface-elevated: #1b2538;
+  
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-default: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+  --text-inverse: #0b0f17;
+  
+  --accent-primary: #3b82f6;
+  --accent-primary-hover: #2563eb;
+  --accent-subtle: rgba(59, 130, 246, 0.12);
+  --accent-border: rgba(59, 130, 246, 0.3);
+  
+  --status-danger: #f43f5e;
+  --status-danger-bg: rgba(244, 63, 94, 0.1);
+  --status-danger-border: rgba(244, 63, 94, 0.28);
+  
+  --status-warning: #f59e0b;
+  --status-warning-bg: rgba(245, 158, 11, 0.1);
+  --status-warning-border: rgba(245, 158, 11, 0.28);
+  
+  --status-info: #0ea5e9;
+  --status-info-bg: rgba(14, 165, 233, 0.1);
+  --status-info-border: rgba(14, 165, 233, 0.28);
+  
+  --status-success: #10b981;
+  --status-success-bg: rgba(16, 185, 129, 0.1);
+  --status-success-border: rgba(16, 185, 129, 0.28);
+  
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
 }
-html,body{
-  background:var(--bg);
-  color:var(--text);
-  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  min-height:100vh;
-  overflow-x:hidden;
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
-.mono{font-family:'Consolas','Monaco','Courier New',monospace}
-.container{
-  max-width:1200px;
-  margin:0 auto;
-  padding:0 20px;
+
+html, body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.container {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 24px;
 }
 
 /* Header */
-header{
-  background:rgba(7,10,16,.96);
-  border-bottom:1px solid var(--border);
-  padding:14px 0;
-  position:sticky;
-  top:0;
-  z-index:50;
-  backdrop-filter:blur(10px);
-}
-.header-inner{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  flex-wrap:wrap;
-  gap:12px;
-}
-.brand{
-  display:flex;
-  align-items:center;
-  gap:10px;
-}
-.brand-icon{
-  width:36px;
-  height:36px;
-  border-radius:8px;
-  background:linear-gradient(135deg,#00b4d8,#4361ee);
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  font-size:18px;
-  color:#fff;
-}
-.brand-title{
-  font-size:17px;
-  font-weight:800;
-  letter-spacing:-.3px;
-}
-.tag{
-  font-size:10px;
-  padding:2px 8px;
-  border-radius:20px;
-  font-weight:700;
-  display:inline-flex;
-  align-items:center;
-  gap:5px;
-}
-.tag-cyan{background:rgba(0,229,255,.12);color:var(--cyan);border:1px solid rgba(0,229,255,.3)}
-.tag-green{background:rgba(0,230,118,.12);color:var(--green);border:1px solid rgba(0,230,118,.3)}
-.hbtn{
-  font-size:11px;
-  padding:6px 12px;
-  border-radius:8px;
-  border:1px solid var(--border);
-  background:var(--surface);
-  color:var(--text);
-  cursor:pointer;
-  text-decoration:none;
-  font-weight:600;
-  transition:all .15s;
-}
-.hbtn:hover{background:var(--surface-hover);border-color:#334155}
-
-/* Top Source Selector Bar */
-.source-bar{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:12px;
-  padding:10px 14px;
-  margin:20px 0;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  flex-wrap:wrap;
-  gap:12px;
-}
-.source-group{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  flex-wrap:wrap;
-}
-.source-label{
-  font-size:11px;
-  font-weight:700;
-  text-transform:uppercase;
-  letter-spacing:.6px;
-  color:var(--muted);
-  margin-right:4px;
-}
-.pill{
-  font-size:11px;
-  font-weight:600;
-  padding:6px 12px;
-  border-radius:8px;
-  border:1px solid var(--border);
-  background:rgba(255,255,255,.03);
-  color:var(--text);
-  cursor:pointer;
-  transition:all .15s;
-  display:inline-flex;
-  align-items:center;
-  gap:6px;
-}
-.pill:hover{background:var(--surface-hover);border-color:#475569}
-.pill.active{
-  background:rgba(0,229,255,.12);
-  border-color:var(--cyan);
-  color:var(--cyan);
-  box-shadow:0 0 15px -3px rgba(0,229,255,.3);
-}
-.upload-btn{
-  font-size:11px;
-  font-weight:700;
-  padding:6px 14px;
-  border-radius:8px;
-  border:1px solid rgba(0,229,255,.4);
-  background:linear-gradient(135deg,rgba(0,229,255,.15),rgba(67,97,238,.2));
-  color:var(--cyan);
-  cursor:pointer;
-  display:inline-flex;
-  align-items:center;
-  gap:6px;
-  transition:all .15s;
-}
-.upload-btn:hover{filter:brightness(1.2);border-color:var(--cyan)}
-.file-info-pill{
-  font-size:11px;
-  color:var(--cyan);
-  font-family:monospace;
-  display:none;
+header {
+  background: rgba(8, 11, 17, 0.88);
+  border-bottom: 1px solid var(--border-default);
+  padding: 12px 0;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
-/* Main Layout Grid - Strictly Locked Tracks */
-.main-grid{
-  display:grid;
-  grid-template-columns:minmax(0,1fr) 340px;
-  gap:20px;
-  align-items:start;
-}
-@media(max-width:960px){
-  .main-grid{grid-template-columns:minmax(0,1fr);}
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-/* Player Stage */
-.stage-card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:14px;
-  padding:14px;
-  min-width:0;
-}
-.stage-header{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  margin-bottom:10px;
-  padding-bottom:8px;
-  border-bottom:1px solid var(--border);
-  font-size:11px;
-  flex-wrap:wrap;
-  gap:8px;
-}
-.stage-title{
-  font-weight:700;
-  display:flex;
-  align-items:center;
-  gap:6px;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
-/* Mode Switcher */
-.mode-switch{
-  display:inline-flex;
-  background:rgba(255,255,255,0.04);
-  border:1px solid var(--border);
-  border-radius:8px;
-  padding:2px;
-  gap:2px;
-}
-.mode-btn{
-  background:transparent;
-  border:none;
-  color:var(--muted);
-  font-size:10px;
-  font-weight:700;
-  padding:4px 10px;
-  border-radius:6px;
-  cursor:pointer;
-  transition:all .15s;
-}
-.mode-btn.active{
-  background:rgba(0,229,255,.18);
-  color:var(--cyan);
+.brand-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(145deg, #1e293b, #0f172a);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #38bdf8;
+  flex-shrink: 0;
 }
 
-/* Strictly Fixed Player Box — Video resizes to box, NOT box to video */
-.player-box{
-  width:100%;
-  height:420px;
-  max-height:420px;
-  background:#000;
-  border-radius:10px;
-  position:relative;
-  overflow:hidden;
-  border:1px solid #1a2235;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  transition:border-color .2s;
+.brand-icon svg {
+  width: 18px;
+  height: 18px;
 }
-.player-box.alert-flash{
-  border-color:var(--red);
-  box-shadow:0 0 20px -3px rgba(255,46,84,.4);
+
+.brand-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-primary);
 }
+
+.brand-subtitle {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.header-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: var(--status-success-bg);
+  border: 1px solid var(--status-success-border);
+  color: var(--status-success);
+}
+
+.pulse-dot-live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-success);
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+
+.header-telemetry-badge {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 4px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.header-telemetry-badge span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.header-telemetry-badge strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.hbtn {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 13px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: all 0.15s ease;
+}
+
+.hbtn:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+}
+
+.hbtn svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+}
+
+/* Feed Selection Strip */
+.source-bar {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 8px 12px;
+  margin: 18px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.source-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.source-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-tertiary);
+  margin-right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pill {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pill:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.pill.active {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.upload-btn {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: all 0.15s ease;
+}
+
+.upload-btn:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+}
+
+.upload-btn svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+}
+
+.file-info-pill {
+  font-size: 11px;
+  color: #60a5fa;
+  display: none;
+  padding: 4px 8px;
+  background: var(--accent-subtle);
+  border-radius: var(--radius-sm);
+}
+
+/* Main Layout Grid */
+.main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1040px) {
+  .main-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Stage Card (Video Player Area) */
+.stage-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  padding: 14px;
+  min-width: 0;
+}
+
+.stage-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.stage-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+}
+
+.stage-title svg {
+  width: 15px;
+  height: 15px;
+  color: #60a5fa;
+}
+
+.mode-switch {
+  display: inline-flex;
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.mode-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mode-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.mode-btn:hover {
+  color: var(--text-secondary);
+}
+
+.mode-btn.active {
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* Video Player Box */
+.player-box {
+  width: 100%;
+  height: 440px;
+  max-height: 440px;
+  background: #020408;
+  border-radius: var(--radius-md);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.25s ease;
+}
+
+.player-box.alert-flash {
+  border-color: var(--status-danger);
+}
+
 .player-box img,
-.player-box video{
-  max-width:100%;
-  max-height:100%;
-  width:auto;
-  height:auto;
-  object-fit:contain;
-  display:block;
-  user-select:none;
-}
-.player-placeholder{
-  position:absolute;
-  inset:0;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:8px;
-  color:#334155;
-  font-size:12px;
-}
-.spinner-overlay{
-  position:absolute;
-  inset:0;
-  background:rgba(7,10,16,.85);
-  backdrop-filter:blur(4px);
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:10px;
-  z-index:20;
-  display:none;
-}
-.spinner-overlay.show{display:flex}
-.spinner{
-  width:36px;
-  height:36px;
-  border:3px solid var(--cyan);
-  border-top-color:transparent;
-  border-radius:50%;
-  animation:spin .8s linear infinite;
-}
-@keyframes spin{to{transform:rotate(360deg)}}
-
-/* Live Cyber-HUD Overlay */
-.live-hud{
-  position:absolute;
-  inset:0;
-  pointer-events:none;
-  display:flex;
-  flex-direction:column;
-  justify-content:space-between;
-  padding:12px;
-  z-index:10;
-}
-.live-hud-top{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  background:rgba(7,10,16,.8);
-  backdrop-filter:blur(6px);
-  padding:6px 12px;
-  border-radius:8px;
-  border:1px solid rgba(255,255,255,.08);
-}
-.live-hud-badge{
-  font-size:11px;
-  font-weight:800;
-  padding:3px 10px;
-  border-radius:6px;
-  text-transform:uppercase;
-  letter-spacing:.5px;
-  transition:all .2s;
-}
-.live-hud-badge.safe{background:rgba(0,230,118,.2);color:var(--green);border:1px solid rgba(0,230,118,.4)}
-.live-hud-badge.elevated{background:rgba(0,229,255,.2);color:var(--cyan);border:1px solid rgba(0,229,255,.4)}
-.live-hud-badge.high{background:rgba(255,171,0,.2);color:var(--amber);border:1px solid rgba(255,171,0,.4)}
-.live-hud-badge.critical{
-  background:rgba(255,46,84,.25);
-  color:var(--red);
-  border:1px solid rgba(255,46,84,.6);
-  animation:criticalPulse 1s infinite alternate;
-}
-@keyframes criticalPulse{from{box-shadow:0 0 4px rgba(255,46,84,.3)}to{box-shadow:0 0 16px rgba(255,46,84,.8)}}
-
-.live-hud-bottom{
-  width:100%;
-  height:5px;
-  background:rgba(255,255,255,.1);
-  border-radius:3px;
-  overflow:hidden;
-}
-.live-hud-progress{
-  height:100%;
-  width:0%;
-  background:var(--green);
-  transition:width .1s linear, background-color .2s;
+.player-box video {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+  user-select: none;
 }
 
-/* Controls Bar */
-.controls-bar{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  margin-top:10px;
-  flex-wrap:wrap;
-  font-size:11px;
+.player-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-tertiary);
+  font-size: 13px;
 }
-.cbtn{
-  padding:6px 12px;
-  border-radius:6px;
-  border:1px solid var(--border);
-  background:rgba(255,255,255,.04);
-  color:var(--text);
-  cursor:pointer;
-  font-weight:600;
-  font-size:11px;
-  transition:all .15s;
+
+.player-placeholder svg {
+  width: 42px;
+  height: 42px;
+  color: rgba(255, 255, 255, 0.12);
 }
-.cbtn:hover{background:var(--surface-hover)}
-.cbtn.play{
-  background:var(--cyan);
-  color:#000;
-  border-color:var(--cyan);
-  font-weight:800;
+
+.spinner-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 11, 17, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 25;
+  display: none;
 }
-.cbtn.play:hover{filter:brightness(1.15)}
-.scrubber-slider{
-  flex:1;
-  min-width:120px;
-  height:6px;
-  -webkit-appearance:none;
-  appearance:none;
-  background:#1a2335;
-  border-radius:4px;
-  outline:none;
-  cursor:pointer;
+
+.spinner-overlay.show {
+  display: flex;
 }
-.scrubber-slider::-webkit-slider-thumb{
-  -webkit-appearance:none;
-  width:16px;
-  height:16px;
-  border-radius:50%;
-  background:var(--cyan);
-  cursor:pointer;
-  box-shadow:0 0 8px var(--cyan);
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 0.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
-.speed-select{
-  background:var(--surface);
-  color:var(--text);
-  border:1px solid var(--border);
-  border-radius:6px;
-  padding:4px 8px;
-  font-size:10px;
-  cursor:pointer;
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Professional CCTV On-Screen Display */
+.live-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px;
+  z-index: 10;
+}
+
+.live-hud-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(10, 14, 23, 0.75);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.live-hud-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.live-hud-badge.safe {
+  background: var(--status-success-bg);
+  color: var(--status-success);
+  border: 1px solid var(--status-success-border);
+}
+
+.live-hud-badge.elevated {
+  background: var(--status-info-bg);
+  color: var(--status-info);
+  border: 1px solid var(--status-info-border);
+}
+
+.live-hud-badge.high {
+  background: var(--status-warning-bg);
+  color: var(--status-warning);
+  border: 1px solid var(--status-warning-border);
+}
+
+.live-hud-badge.critical {
+  background: var(--status-danger-bg);
+  color: var(--status-danger);
+  border: 1px solid var(--status-danger-border);
+}
+
+.live-hud-bottom {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.live-hud-progress {
+  height: 100%;
+  width: 0%;
+  background: var(--status-success);
+  transition: width 0.1s linear, background-color 0.2s ease;
+}
+
+/* Surveillance Playback Controls */
+.controls-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.cbtn {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 12px;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.cbtn:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+}
+
+.cbtn.play {
+  background: #3b82f6;
+  color: #ffffff;
+  border-color: #2563eb;
+  font-weight: 600;
+}
+
+.cbtn.play:hover {
+  background: #2563eb;
+}
+
+.cbtn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.scrubber-slider {
+  flex: 1;
+  min-width: 140px;
+  height: 5px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #1e293b;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.scrubber-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #38bdf8;
+  cursor: pointer;
+  border: 2px solid #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  transition: transform 0.1s ease;
+}
+
+.scrubber-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.speed-select {
+  background: var(--bg-surface-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+}
+
+.speed-select:focus {
+  border-color: var(--border-strong);
 }
 
 /* Timeline Chart */
-.chart-card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:14px;
-  padding:14px;
-  margin-top:16px;
-  min-width:0;
-}
-.chart-header{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  font-size:11px;
-  margin-bottom:8px;
-}
-.chart-wrap{
-  width:100%;
-  height:120px;
-  position:relative;
-  overflow:hidden;
+.chart-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  padding: 14px 16px;
+  margin-top: 16px;
+  min-width: 0;
 }
 
-/* Sidebar Info Panel */
-.side-panel{
-  display:flex;
-  flex-direction:column;
-  gap:14px;
-  min-width:0;
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
 }
-.side-card{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:14px;
-  padding:14px;
-  min-width:0;
+
+.chart-header-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
 }
-.verdict-box{
-  border-radius:10px;
-  padding:12px;
-  margin-bottom:12px;
-  border:1px solid;
+
+.chart-header-left svg {
+  width: 14px;
+  height: 14px;
 }
-.verdict-box.threat{
-  background:rgba(255,46,84,.1);
-  border-color:rgba(255,46,84,.3);
+
+.chart-wrap {
+  width: 100%;
+  height: 120px;
+  position: relative;
+  overflow: hidden;
 }
-.verdict-box.high{
-  background:rgba(255,171,0,.1);
-  border-color:rgba(255,171,0,.3);
+
+/* Telemetry Sidebar */
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
 }
-.verdict-box.elevated{
-  background:rgba(0,229,255,.1);
-  border-color:rgba(0,229,255,.3);
+
+.side-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  padding: 16px;
+  min-width: 0;
 }
-.verdict-box.safe{
-  background:rgba(0,230,118,.1);
-  border-color:rgba(0,230,118,.3);
+
+.side-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-tertiary);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.verdict-head{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  font-weight:800;
-  font-size:13px;
-  letter-spacing:.3px;
-  margin-bottom:4px;
+
+.side-card-title svg {
+  width: 13px;
+  height: 13px;
+  color: var(--text-secondary);
 }
-.pulse-dot{
-  width:8px;
-  height:8px;
-  border-radius:50%;
-  box-shadow:0 0 8px currentColor;
+
+.verdict-box {
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px solid;
+  transition: all 0.2s ease;
 }
-.verdict-desc{
-  font-size:11px;
-  color:var(--muted);
-  line-height:1.4;
+
+.verdict-box.threat {
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-border);
+}
+
+.verdict-box.high {
+  background: var(--status-warning-bg);
+  border-color: var(--status-warning-border);
+}
+
+.verdict-box.elevated {
+  background: var(--status-info-bg);
+  border-color: var(--status-info-border);
+}
+
+.verdict-box.safe {
+  background: var(--status-success-bg);
+  border-color: var(--status-success-border);
+}
+
+.verdict-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.2px;
+  margin-bottom: 4px;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.verdict-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
 }
 
 /* Metric Grid */
-.metric-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:8px;
-  margin-bottom:12px;
-}
-.metric-tile{
-  background:rgba(255,255,255,.02);
-  border:1px solid rgba(255,255,255,.05);
-  border-radius:8px;
-  padding:8px 10px;
-}
-.metric-title{
-  font-size:9px;
-  text-transform:uppercase;
-  letter-spacing:.5px;
-  color:var(--muted);
-}
-.metric-num{
-  font-size:16px;
-  font-weight:800;
-  margin-top:2px;
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
 }
 
-.tech-row{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  font-size:11px;
-  padding:5px 0;
-  border-bottom:1px solid rgba(255,255,255,.04);
+.metric-tile {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
 }
-.tech-row:last-child{border-bottom:none}
-.tech-label{color:var(--muted)}
-.tech-val{font-weight:600}
 
-/* Paper Modal */
-.modal-overlay{
-  position:fixed;
-  inset:0;
-  background:rgba(0,0,0,.75);
-  backdrop-filter:blur(6px);
-  z-index:100;
-  display:none;
-  align-items:center;
-  justify-content:center;
-  padding:20px;
+.metric-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
 }
-.modal-overlay.show{display:flex}
-.modal-box{
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:14px;
-  max-width:540px;
-  width:100%;
-  padding:22px;
-  position:relative;
-}
-.modal-close{
-  position:absolute;
-  top:14px;
-  right:14px;
-  background:transparent;
-  border:none;
-  color:var(--muted);
-  font-size:18px;
-  cursor:pointer;
-}
-.bench-grid{
-  display:grid;
-  grid-template-columns:repeat(4,1fr);
-  gap:8px;
-  margin:14px 0;
-}
-.bench-cell{
-  background:rgba(255,255,255,.03);
-  border:1px solid var(--border);
-  border-radius:8px;
-  padding:10px 8px;
-  text-align:center;
-}
-.bench-num{font-size:15px;font-weight:800;color:var(--cyan);font-family:monospace}
-.bench-lbl{font-size:9px;color:var(--muted);margin-top:2px}
 
-footer{
-  border-top:1px solid var(--border);
-  padding:16px 0;
-  font-size:11px;
-  color:#475569;
-  text-align:center;
-  margin-top:30px;
+.metric-num {
+  font-size: 17px;
+  font-weight: 700;
+  margin-top: 2px;
+  color: var(--text-primary);
+}
+
+.tech-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tech-row:last-child {
+  border-bottom: none;
+}
+
+.tech-label {
+  color: var(--text-secondary);
+}
+
+.tech-val {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 11, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.modal-overlay.show {
+  display: flex;
+}
+
+.modal-box {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  max-width: 560px;
+  width: 100%;
+  padding: 24px;
+  position: relative;
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.8);
+}
+
+.modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-elevated);
+}
+
+.bench-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.bench-cell {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 10px 8px;
+  text-align: center;
+}
+
+.bench-num {
+  font-size: 15px;
+  font-weight: 700;
+  color: #38bdf8;
+}
+
+.bench-lbl {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  margin-top: 3px;
+}
+
+footer {
+  border-top: 1px solid var(--border-default);
+  padding: 20px 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+  margin-top: 40px;
+}
+
+footer a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+footer a:hover {
+  color: var(--text-primary);
 }
 </style>
 </head>
@@ -585,79 +927,149 @@ footer{
 <header>
 <div class="container header-inner">
   <div class="brand">
-    <div class="brand-icon">&#128737;</div>
+    <div class="brand-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <circle cx="12" cy="11" r="3"/>
+      </svg>
+    </div>
     <div>
-      <div style="display:flex;align-items:center;gap:6px">
+      <div style="display:flex;align-items:center;gap:8px">
         <span class="brand-title">ARGUS</span>
-        <span class="tag tag-cyan mono">EDGE SURVEILLANCE</span>
-        <span class="tag tag-green"><span style="width:6px;height:6px;border-radius:50%;background:var(--green)"></span> ONLINE</span>
+        <span class="header-status-pill">
+          <span class="pulse-dot-live"></span>
+          ACTIVE
+        </span>
       </div>
+      <div class="brand-subtitle">Relational Graph Surveillance System</div>
     </div>
   </div>
+
+  <div class="header-telemetry-badge mono">
+    <span>ENGINE: <strong>DUAL-LAYER E2E</strong></span>
+    <span>BENCHMARK: <strong>0.795 AUC</strong></span>
+    <span>MEMORY: <strong>CAUSAL BOUNDED</strong></span>
+  </div>
+
   <div style="display:flex;align-items:center;gap:8px">
-    <span class="mono" style="font-size:10px;color:var(--muted);padding-right:8px;border-right:1px solid var(--border)">Joint E2E Checkpoint (0.795 ROC-AUC)</span>
-    <button class="hbtn" onclick="document.getElementById('paperModal').classList.add('show')">&#128196; Paper</button>
-    <a class="hbtn" href="/outputs/dashboard_violence.html" target="_blank">&#128202; Report</a>
+    <button class="hbtn" onclick="document.getElementById('paperModal').classList.add('show')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+      Research Paper
+    </button>
+    <a class="hbtn" href="/outputs/dashboard_violence.html" target="_blank">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="20" x2="18" y2="10"/>
+        <line x1="12" y1="20" x2="12" y2="4"/>
+        <line x1="6" y1="20" x2="6" y2="14"/>
+      </svg>
+      Audit Report
+    </a>
   </div>
 </div>
 </header>
 
 <main class="container">
 
-<!-- Compact Source Selector Bar -->
+<!-- Feed Selection Strip -->
 <div class="source-bar">
   <div class="source-group">
-    <span class="source-label">Feeds:</span>
-    <button class="pill active" id="pill-violence_691" onclick="selectPreset('violence_691')">🚨 Street Fight</button>
-    <button class="pill" id="pill-violence_308" onclick="selectPreset('violence_308')">⚠️ Brawl</button>
-    <button class="pill" id="pill-robbery_087" onclick="selectPreset('robbery_087')">🛑 Robbery</button>
-    <button class="pill" id="pill-normal_344" onclick="selectPreset('normal_344')">🛡️ Walkway</button>
-    <button class="pill" id="pill-normal_950" onclick="selectPreset('normal_950')">✅ Plaza</button>
+    <span class="source-label">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+        <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+        <line x1="6" y1="6" x2="6.01" y2="6"/>
+        <line x1="6" y1="18" x2="6.01" y2="18"/>
+      </svg>
+      Channels:
+    </span>
+    <button class="pill active" id="pill-violence_691" onclick="selectPreset('violence_691')">
+      <span class="pill-dot" style="color:var(--status-danger)"></span>
+      CAM-01 Street Altercation
+    </button>
+    <button class="pill" id="pill-violence_308" onclick="selectPreset('violence_308')">
+      <span class="pill-dot" style="color:var(--status-danger)"></span>
+      CAM-02 Corridor Conflict
+    </button>
+    <button class="pill" id="pill-robbery_087" onclick="selectPreset('robbery_087')">
+      <span class="pill-dot" style="color:var(--status-warning)"></span>
+      CAM-03 Storefront Incident
+    </button>
+    <button class="pill" id="pill-normal_344" onclick="selectPreset('normal_344')">
+      <span class="pill-dot" style="color:var(--status-success)"></span>
+      CAM-04 Pedestrian Walkway
+    </button>
+    <button class="pill" id="pill-normal_950" onclick="selectPreset('normal_950')">
+      <span class="pill-dot" style="color:var(--status-success)"></span>
+      CAM-05 Public Plaza
+    </button>
   </div>
+  
   <div style="display:flex;align-items:center;gap:8px">
     <input type="file" id="fileInput" accept=".mp4,.avi,.mov,.webm" style="display:none">
     <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
-      <span>📁</span> <span>Upload Video</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <span>Upload Video</span>
     </button>
-    <span class="file-info-pill" id="fileInfoPill"></span>
+    <span class="file-info-pill mono" id="fileInfoPill"></span>
   </div>
 </div>
 
-<!-- Main 2-Column Locked Layout -->
+<!-- Main 2-Column Console Layout -->
 <div class="main-grid">
 
-  <!-- Left: Video Player Stage + Timeline -->
+  <!-- Left Column: Video Viewport & Temporal Timeline -->
   <div style="min-width:0">
     <div class="stage-card">
       <div class="stage-header">
         <div class="stage-title">
-          <span style="color:var(--cyan)">&#128249;</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
           <span id="feedTitle">Street Violence (V_691)</span>
         </div>
-        <div style="display:flex;align-items:center;gap:10px">
+        <div style="display:flex;align-items:center;gap:12px">
           <div class="mode-switch">
-            <button class="mode-btn active" id="btnModeVideo" onclick="setPlayerMode('video')">📹 Native 30 FPS</button>
-            <button class="mode-btn" id="btnModeVision" onclick="setPlayerMode('vision')">⚡ AI Vision</button>
+            <button class="mode-btn active" id="btnModeVideo" onclick="setPlayerMode('video')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              Native Stream (30 FPS)
+            </button>
+            <button class="mode-btn" id="btnModeVision" onclick="setPlayerMode('vision')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              Spatial Scene Graph
+            </button>
           </div>
-          <div class="mono" style="color:var(--muted);font-size:11px">
+          <div class="mono" style="color:var(--text-tertiary);font-size:11px">
             <span id="timeTag">00:00.0</span> &nbsp;|&nbsp; <span id="frameCounter">-- / --</span>
           </div>
         </div>
       </div>
 
-      <!-- Strictly Fixed Height Viewport Box -->
+      <!-- Video Player Viewport -->
       <div class="player-box" id="playerBox">
-        <!-- Native Full-Speed Video Player -->
         <video id="nativeVideo" playsinline preload="auto" loop style="display:none"></video>
-
-        <!-- AI Keyframe Vision HUD -->
         <img id="frameImg" alt="" style="display:none">
 
-        <!-- Live Cyber-HUD Overlay (Active during video playback) -->
+        <!-- Clean OSD Overlay -->
         <div class="live-hud" id="liveHud" style="display:none">
           <div class="live-hud-top">
-            <span style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:.5px">ARGUS SURVEILLANCE &bull; CAM-01</span>
-            <span class="live-hud-badge safe" id="liveHudBadge">NORMAL: 0.0%</span>
+            <span class="mono" style="font-size:10px;font-weight:600;color:var(--text-secondary);letter-spacing:0.5px">CAM-01 • RTSP 1080P • LIVE</span>
+            <span class="live-hud-badge safe mono" id="liveHudBadge">NORMAL: 0.0%</span>
           </div>
           <div class="live-hud-bottom">
             <div class="live-hud-progress" id="hudProgressBar"></div>
@@ -666,29 +1078,63 @@ footer{
 
         <!-- Initial Placeholder -->
         <div class="player-placeholder" id="placeholder">
-          <div style="font-size:36px;opacity:.3">&#128373;</div>
-          <div>Select a feed above or drop a video file here</div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+            <line x1="7" y1="2" x2="7" y2="22"/>
+            <line x1="17" y1="2" x2="17" y2="22"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <line x1="2" y1="7" x2="7" y2="7"/>
+            <line x1="2" y1="17" x2="7" y2="17"/>
+            <line x1="17" y1="17" x2="22" y2="17"/>
+            <line x1="17" y1="7" x2="22" y2="7"/>
+          </svg>
+          <div>Select an active channel feed or drag &amp; drop video file</div>
         </div>
 
         <!-- Loading Overlay -->
         <div class="spinner-overlay" id="loadingOverlay">
           <div class="spinner"></div>
-          <div style="font-size:11px;color:var(--cyan);font-weight:600" id="loadingText">Analyzing feed with ARGUS neural engine...</div>
+          <div style="font-size:12px;color:var(--text-secondary);font-weight:500" id="loadingText">Executing dual-layer neural graph reasoning...</div>
         </div>
       </div>
 
       <!-- Playback Controls Bar -->
       <div class="controls-bar">
-        <button class="cbtn" onclick="stepBackward()">&#9664;</button>
-        <button class="cbtn play" id="playBtn" onclick="togglePlay()">&#9654; Play</button>
-        <button class="cbtn" onclick="stepForward()">&#9654;</button>
-        <button class="cbtn" id="loopBtn" onclick="toggleLoop()" style="color:var(--cyan)">&#128257; Loop</button>
+        <button class="cbtn" onclick="stepBackward()" title="Step Backward 0.2s">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="11 19 2 12 11 5 11 19"/>
+            <polygon points="22 19 13 12 22 5 22 19"/>
+          </svg>
+        </button>
+        <button class="cbtn play" id="playBtn" onclick="togglePlay()">
+          <svg viewBox="0 0 24 24" fill="currentColor" id="playBtnIcon">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          Play
+        </button>
+        <button class="cbtn" onclick="stepForward()" title="Step Forward 0.2s">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="13 19 22 12 13 5 13 19"/>
+            <polygon points="2 19 11 12 2 5 2 19"/>
+          </svg>
+        </button>
+        <button class="cbtn" id="loopBtn" onclick="toggleLoop()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="17 1 21 5 17 9"/>
+            <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+            <polyline points="7 23 3 19 7 15"/>
+            <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+          </svg>
+          Loop
+        </button>
+        
         <input type="range" class="scrubber-slider" id="scrubber" min="0" max="0" value="0" step="0.05" oninput="seekScrubber(+this.value)">
+        
         <select class="speed-select" id="speedSelect" onchange="setPlaybackSpeed(+this.value)">
-          <option value="0.5">0.5x</option>
+          <option value="0.5">0.5x Speed</option>
           <option value="1.0" selected>1.0x (Normal)</option>
-          <option value="1.5">1.5x</option>
-          <option value="2.0">2.0x</option>
+          <option value="1.5">1.5x Speed</option>
+          <option value="2.0">2.0x Speed</option>
         </select>
       </div>
     </div>
@@ -696,8 +1142,13 @@ footer{
     <!-- Timeline Chart Under Player -->
     <div class="chart-card">
       <div class="chart-header">
-        <span style="font-weight:700">&#128200; Causal Anomaly Timeline</span>
-        <span style="color:var(--muted);font-size:10px">Click chart or drag scrubber to seek video</span>
+        <div class="chart-header-left">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span>Temporal Anomaly Probability Curve</span>
+        </div>
+        <span style="font-size:10px;color:var(--text-tertiary);text-transform:none">Click chart to seek timestamp</span>
       </div>
       <div class="chart-wrap">
         <canvas id="chartCanvas"></canvas>
@@ -705,16 +1156,24 @@ footer{
     </div>
   </div>
 
-  <!-- Right: Sidebar Telemetry Panel -->
+  <!-- Right Column: Forensic Telemetry Sidebar -->
   <div class="side-panel">
 
-    <!-- Verdict Card -->
+    <!-- Incident Classification Card -->
     <div class="side-card">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Verdict</div>
+      <div class="side-card-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+          <polyline points="2 17 12 22 22 17"/>
+          <polyline points="2 12 12 17 22 12"/>
+        </svg>
+        Threat Assessment
+      </div>
+      
       <div class="verdict-box threat" id="verdictBox">
         <div class="verdict-head" id="verdictHead">
-          <span class="pulse-dot" id="verdictDot" style="background:var(--red)"></span>
-          <span id="verdictText">CRITICAL THREAT</span>
+          <span class="pulse-dot" id="verdictDot" style="color:var(--status-danger)"></span>
+          <span id="verdictText">CRITICAL INCIDENT</span>
         </div>
         <div class="verdict-desc" id="verdictDesc">Aggressive physical altercation detected.</div>
       </div>
@@ -722,30 +1181,30 @@ footer{
       <div class="metric-grid">
         <div class="metric-tile">
           <div class="metric-title">Peak Score</div>
-          <div class="metric-num mono" id="metricPeak" style="color:var(--red)">96.8%</div>
+          <div class="metric-num mono" id="metricPeak" style="color:var(--status-danger)">96.8%</div>
         </div>
         <div class="metric-tile">
-          <div class="metric-title">Average</div>
+          <div class="metric-title">Mean Score</div>
           <div class="metric-num mono" id="metricMean">84.8%</div>
         </div>
         <div class="metric-tile">
-          <div class="metric-title">Processing</div>
-          <div class="metric-num mono" id="metricFps" style="color:var(--green)">15.8 FPS</div>
+          <div class="metric-title">Throughput</div>
+          <div class="metric-num mono" id="metricFps" style="color:var(--status-success)">15.8 FPS</div>
         </div>
         <div class="metric-tile">
           <div class="metric-title">Frame Savings</div>
-          <div class="metric-num mono" id="metricReduction" style="color:var(--cyan)">-31.2%</div>
+          <div class="metric-num mono" id="metricReduction" style="color:#38bdf8">-31.2%</div>
         </div>
       </div>
 
-      <!-- Dynamic Sensitivity Slider -->
-      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <span style="font-size:10px;font-weight:700;text-transform:uppercase;color:var(--muted)">Threat Sensitivity</span>
-          <span class="mono" id="threshLabel" style="font-size:11px;color:var(--cyan);font-weight:700">0.35 (Calibrated)</span>
+      <!-- Sensitivity Calibration Slider -->
+      <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border-subtle)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:11px;font-weight:600;color:var(--text-secondary)">Detection Sensitivity</span>
+          <span class="mono" id="threshLabel" style="font-size:11px;color:#38bdf8;font-weight:600">0.35 (Calibrated)</span>
         </div>
         <input type="range" class="scrubber-slider" id="threshSlider" min="0.10" max="0.85" step="0.05" value="0.35" style="width:100%" oninput="setThreshold(parseFloat(this.value))">
-        <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:4px">
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-tertiary);margin-top:6px">
           <span>High Recall (0.10)</span>
           <span>Balanced (0.35)</span>
           <span>Strict (0.85)</span>
@@ -753,21 +1212,61 @@ footer{
       </div>
     </div>
 
-    <!-- Scene Graph Card -->
+    <!-- Relational Scene Graph Card -->
     <div class="side-card">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">&#128376; EdgeGAT Graph</div>
-      <div class="tech-row"><span class="tech-label">Detected Entities</span><span class="tech-val mono" id="techEntities">16 Boxes</span></div>
-      <div class="tech-row"><span class="tech-label">Relational Edges</span><span class="tech-val mono" id="techEdges" style="color:var(--cyan)">8 Pairs</span></div>
-      <div class="tech-row"><span class="tech-label">Token Pruning</span><span class="tech-val mono" style="color:var(--green)">50% (4x FLOPs)</span></div>
-      <div class="tech-row"><span class="tech-label">Sampling Stride</span><span class="tech-val mono" id="techStride">Dense &bull; T=32</span></div>
+      <div class="side-card-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="18" cy="5" r="3"/>
+          <circle cx="6" cy="12" r="3"/>
+          <circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+          <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+        Spatial Scene Graph (EdgeGAT)
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Detected Entities</span>
+        <span class="tech-val mono" id="techEntities">16 Boxes</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Relational Edges</span>
+        <span class="tech-val mono" id="techEdges" style="color:#60a5fa">8 Pairs</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Visual Token Pruning</span>
+        <span class="tech-val mono" style="color:var(--status-success)">50% (4x FLOPs)</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Sampling Configuration</span>
+        <span class="tech-val mono" id="techStride">Dense &bull; T=32</span>
+      </div>
     </div>
 
-    <!-- Latency Card -->
+    <!-- Execution Profile Card -->
     <div class="side-card">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">&#9201; Execution Profile</div>
-      <div class="tech-row"><span class="tech-label">Video Decode</span><span class="tech-val mono" id="techDecode">45.2 ms</span></div>
-      <div class="tech-row"><span class="tech-label">Neural Inference</span><span class="tech-val mono" id="techInfer">1.95 s</span></div>
-      <div class="tech-row"><span class="tech-label">Total Latency</span><span class="tech-val mono" id="techTotal" style="color:var(--cyan)">2.05 s</span></div>
+      <div class="side-card-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        Execution Profile
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Video Decode</span>
+        <span class="tech-val mono" id="techDecode">45.2 ms</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Neural Inference</span>
+        <span class="tech-val mono" id="techInfer">1.95 s</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Total End-to-End</span>
+        <span class="tech-val mono" id="techTotal" style="color:#38bdf8">2.05 s</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Target Architecture</span>
+        <span class="tech-val mono">ConvNeXt + EdgeGAT</span>
+      </div>
     </div>
 
   </div>
@@ -778,27 +1277,36 @@ footer{
 
 <footer>
 <div class="container">
-  <strong>ARGUS</strong> &bull; Adaptive Relational Graph Understanding for Surveillance &bull; School of CSE, VIT Vellore &bull; <a href="https://github.com/sameer-codes-ai/ARGUS-Adaptive-Relational-Graph-Understanding-System" target="_blank" style="color:var(--cyan);text-decoration:none">GitHub</a>
+  <span>ARGUS &bull; Adaptive Relational Graph Understanding System &bull; Research &bull; <a href="https://github.com/sameer-codes-ai/ARGUS-Adaptive-Relational-Graph-Understanding-System" target="_blank">Repository</a></span>
 </div>
 </footer>
 
-<!-- Paper Modal -->
+<!-- Research Paper Modal -->
 <div class="modal-overlay" id="paperModal">
 <div class="modal-box">
-  <button class="modal-close" onclick="document.getElementById('paperModal').classList.remove('show')">&times;</button>
-  <h3 style="font-size:15px;font-weight:800;margin-bottom:4px">&#128196; ARGUS Academic Paper</h3>
-  <p style="font-size:11px;color:var(--muted);margin-bottom:12px">Omkar Joshi &amp; Sameer Kumar &bull; Vellore Institute of Technology</p>
+  <button class="modal-close" onclick="document.getElementById('paperModal').classList.remove('show')">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  </button>
+  <h3 style="font-size:16px;font-weight:700;margin-bottom:4px">ARGUS Technical Architecture</h3>
+  <p style="font-size:12px;color:var(--text-secondary);margin-bottom:16px">Adaptive Relational Graph Understanding for Surveillance</p>
+  
   <div class="bench-grid">
-    <div class="bench-cell"><div class="bench-num">0.7949</div><div class="bench-lbl">ROC-AUC</div></div>
-    <div class="bench-cell"><div class="bench-num">0.7449</div><div class="bench-lbl">Avg Precision</div></div>
-    <div class="bench-cell"><div class="bench-num">72.73%</div><div class="bench-lbl">Accuracy</div></div>
-    <div class="bench-cell"><div class="bench-num">0.7038</div><div class="bench-lbl">F1-Score</div></div>
+    <div class="bench-cell"><div class="bench-num mono">0.7949</div><div class="bench-lbl">ROC-AUC</div></div>
+    <div class="bench-cell"><div class="bench-num mono">0.7449</div><div class="bench-lbl">Avg Precision</div></div>
+    <div class="bench-cell"><div class="bench-num mono">72.73%</div><div class="bench-lbl">Accuracy</div></div>
+    <div class="bench-cell"><div class="bench-num mono">0.7038</div><div class="bench-lbl">F1-Score</div></div>
   </div>
-  <p style="font-size:11px;color:var(--muted);line-height:1.5">
-    ARGUS models surveillance anomalies as topological disruptions over explicit dynamic scene graphs with causal temporal memory. Evaluated on 605 clips across UCF-Crime &amp; RealLifeViolence.
+  
+  <p style="font-size:12px;color:var(--text-secondary);line-height:1.6">
+    ARGUS models surveillance anomalies as topological disruptions over explicit dynamic scene graphs with causal temporal memory. Evaluated on 605 test clips across UCF-Crime and RealLifeViolence datasets, achieving real-time inference on edge compute.
   </p>
-  <div style="margin-top:14px;text-align:right">
-    <a href="/docs/FinalPaper.md" target="_blank" class="hbtn" style="background:var(--cyan);color:#000;border-color:var(--cyan);font-weight:800;font-size:11px">Open Full Paper</a>
+  
+  <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px">
+    <button class="hbtn" onclick="document.getElementById('paperModal').classList.remove('show')">Dismiss</button>
+    <a href="/docs/FinalPaper.md" target="_blank" class="hbtn" style="background:#3b82f6;color:#ffffff;border-color:#2563eb;font-weight:600">Open Full Paper</a>
   </div>
 </div>
 </div>
@@ -834,12 +1342,21 @@ function initVideoEvents() {
   nativeVideo.addEventListener('ended', onVideoEnded);
   nativeVideo.addEventListener('play', () => {
     isPlaying = true;
-    document.getElementById('playBtn').innerHTML = '&#9646;&#9646; Pause';
+    updatePlayBtnState(true);
   });
   nativeVideo.addEventListener('pause', () => {
     isPlaying = false;
-    document.getElementById('playBtn').innerHTML = '&#9654; Play';
+    updatePlayBtnState(false);
   });
+}
+
+function updatePlayBtnState(playing) {
+  const btn = document.getElementById('playBtn');
+  if (playing) {
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Pause`;
+  } else {
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" style="width:13px;height:13px"><polygon points="5 3 19 12 5 21 5 3"/></svg> Play`;
+  }
 }
 
 function selectPreset(id) {
@@ -863,11 +1380,16 @@ function initUpload() {
     if (input.files && input.files.length > 0) handleFile(input.files[0]);
   });
 
-  dropBox.addEventListener('dragover', e => { e.preventDefault(); dropBox.style.borderColor = 'var(--cyan)'; });
-  dropBox.addEventListener('dragleave', () => { dropBox.style.borderColor = '#1a2235'; });
+  dropBox.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropBox.style.borderColor = 'var(--accent-primary)';
+  });
+  dropBox.addEventListener('dragleave', () => {
+    dropBox.style.borderColor = 'var(--border-default)';
+  });
   dropBox.addEventListener('drop', e => {
     e.preventDefault();
-    dropBox.style.borderColor = '#1a2235';
+    dropBox.style.borderColor = 'var(--border-default)';
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
   });
 }
@@ -882,7 +1404,7 @@ function handleFile(file) {
   const fd = new FormData();
   fd.append('video_file', file);
   fd.append('threshold', String(activeThreshold));
-  fd.append('frames', '32'); // High temporal resolution
+  fd.append('frames', '32');
   runAnalysis(fd, true);
 }
 
@@ -910,7 +1432,6 @@ function applyData(d) {
   timelinePoints = d.timeline || [];
   frameIdx = 0;
 
-  // Setup video source if available
   if (d.video_url) {
     nativeVideo.src = d.video_url;
     nativeVideo.load();
@@ -919,33 +1440,27 @@ function applyData(d) {
     setPlayerMode('vision');
   }
 
-  // Update verdict with active threshold
   updateVerdict(d.peak_score, d.mean_score);
 
-  // Metrics
   document.getElementById('metricFps').textContent = d.fps + ' FPS';
   document.getElementById('metricReduction').textContent = '-' + d.frame_reduction_pct + '%';
   document.getElementById('techEntities').textContent = d.num_entities + ' Entities';
   document.getElementById('techEdges').textContent = Math.max(1, Math.round(d.num_entities * 0.75)) + ' Pairs';
-  document.getElementById('techStride').textContent = (d.total_input_frames || 32) + ' Fr &bull; ' + (d.native_fps || 25) + ' FPS';
+  document.getElementById('techStride').textContent = (d.total_input_frames || 32) + ' Fr • ' + (d.native_fps || 25) + ' FPS';
   document.getElementById('techDecode').textContent = d.timings.decode_ms + ' ms';
   document.getElementById('techInfer').textContent = (d.timings.infer_ms/1000).toFixed(2) + ' s';
   document.getElementById('techTotal').textContent = (d.timings.total_ms/1000).toFixed(2) + ' s';
 
-  // Build Chart
   updateChartData();
 
-  // Scrubber bounds
   const dur = d.duration_sec || (frames.length ? frames[frames.length - 1].time_sec : 1);
   const scrubber = document.getElementById('scrubber');
   scrubber.min = 0;
   scrubber.max = dur;
   scrubber.value = 0;
 
-  // Preload vision images
   frames.forEach(f => { const im = new Image(); im.src = f.data_url; });
 
-  // Start playback
   if (playerMode === 'video' && d.video_url) {
     nativeVideo.play().catch(() => {});
   } else {
@@ -967,32 +1482,32 @@ function updateVerdict(peakScore, meanScore) {
 
   if (peakScore >= 0.75) {
     vb.className = 'verdict-box threat';
-    vt.textContent = 'CRITICAL THREAT';
-    vt.style.color = 'var(--red)';
-    dot.style.background = 'var(--red)';
-    mp.style.color = 'var(--red)';
-    vd.textContent = 'High-velocity aggressive physical altercation / assault detected.';
+    vt.textContent = 'CRITICAL INCIDENT';
+    vt.style.color = 'var(--status-danger)';
+    dot.style.color = 'var(--status-danger)';
+    mp.style.color = 'var(--status-danger)';
+    vd.textContent = 'High-velocity physical altercation with anomalous kinetic disruption.';
   } else if (peakScore >= 0.50) {
     vb.className = 'verdict-box high';
-    vt.textContent = 'HIGH THREAT';
-    vt.style.color = 'var(--amber)';
-    dot.style.background = 'var(--amber)';
-    mp.style.color = 'var(--amber)';
-    vd.textContent = 'Hostile spatial convergence or suspicious confrontation detected.';
+    vt.textContent = 'ELEVATED RISK CONFLICT';
+    vt.style.color = 'var(--status-warning)';
+    dot.style.color = 'var(--status-warning)';
+    mp.style.color = 'var(--status-warning)';
+    vd.textContent = 'Suspicious rapid spatial convergence or confrontational interaction.';
   } else if (peakScore >= activeThreshold) {
     vb.className = 'verdict-box elevated';
-    vt.textContent = 'ELEVATED CONFLICT';
-    vt.style.color = 'var(--cyan)';
-    dot.style.background = 'var(--cyan)';
-    mp.style.color = 'var(--cyan)';
-    vd.textContent = 'Unusual kinetic activity detected exceeding baseline threshold.';
+    vt.textContent = 'MONITORED ANOMALY';
+    vt.style.color = 'var(--status-info)';
+    dot.style.color = 'var(--status-info)';
+    mp.style.color = 'var(--status-info)';
+    vd.textContent = 'Activity exceeding normal baseline threshold; telemetry actively monitored.';
   } else {
     vb.className = 'verdict-box safe';
-    vt.textContent = 'NORMAL SURVEILLANCE';
-    vt.style.color = 'var(--green)';
-    dot.style.background = 'var(--green)';
-    mp.style.color = 'var(--green)';
-    vd.textContent = 'Ambient pedestrian activity within normal safe parameters.';
+    vt.textContent = 'NOMINAL SURVEILLANCE';
+    vt.style.color = 'var(--status-success)';
+    dot.style.color = 'var(--status-success)';
+    mp.style.color = 'var(--status-success)';
+    vd.textContent = 'Pedestrian movements and spatial interactions within safe baseline limits.';
   }
 }
 
@@ -1007,7 +1522,6 @@ function setThreshold(val) {
       chart.data.datasets[1].label = 'Threshold (' + val.toFixed(2) + ')';
       chart.update('none');
     }
-    // Update live HUD
     if (playerMode === 'video') {
       const cur = nativeVideo.currentTime;
       updateLiveHud(getScoreAtTime(cur));
@@ -1046,7 +1560,6 @@ function onVideoTimeUpdate() {
   const cur = nativeVideo.currentTime;
   const dur = nativeVideo.duration || (currentData ? currentData.duration_sec : 1) || 1;
 
-  // Format time tags
   const curMin = Math.floor(cur / 60);
   const curSec = (cur % 60).toFixed(1);
   const durMin = Math.floor(dur / 60);
@@ -1056,15 +1569,11 @@ function onVideoTimeUpdate() {
     String(durMin).padStart(2,'0') + ':' + String(durSec).padStart(4,'0');
   document.getElementById('frameCounter').textContent = 'FULL 30 FPS';
 
-  // Scrubber sync
   const scrubber = document.getElementById('scrubber');
   scrubber.value = cur;
 
-  // Real-time HUD anomaly score interpolation
   const score = getScoreAtTime(cur);
   updateLiveHud(score);
-
-  // Sync chart point
   highlightChartAtTime(cur);
 }
 
@@ -1074,7 +1583,7 @@ function onVideoEnded() {
     nativeVideo.play().catch(() => {});
   } else {
     isPlaying = false;
-    document.getElementById('playBtn').innerHTML = '&#9654; Play';
+    updatePlayBtnState(false);
   }
 }
 
@@ -1105,24 +1614,24 @@ function updateLiveHud(score) {
   bar.style.width = Math.min(100, Math.max(0, score * 100)) + '%';
 
   if (score >= 0.75) {
-    badge.className = 'live-hud-badge critical';
-    badge.textContent = 'CRITICAL: ' + pct + '% [ASSAULT]';
-    bar.style.backgroundColor = 'var(--red)';
+    badge.className = 'live-hud-badge critical mono';
+    badge.textContent = 'CRITICAL: ' + pct + '%';
+    bar.style.backgroundColor = 'var(--status-danger)';
     pbox.classList.add('alert-flash');
   } else if (score >= 0.50) {
-    badge.className = 'live-hud-badge high';
-    badge.textContent = 'HIGH THREAT: ' + pct + '%';
-    bar.style.backgroundColor = 'var(--amber)';
+    badge.className = 'live-hud-badge high mono';
+    badge.textContent = 'HIGH RISK: ' + pct + '%';
+    bar.style.backgroundColor = 'var(--status-warning)';
     pbox.classList.remove('alert-flash');
   } else if (score >= activeThreshold) {
-    badge.className = 'live-hud-badge elevated';
+    badge.className = 'live-hud-badge elevated mono';
     badge.textContent = 'ELEVATED: ' + pct + '%';
-    bar.style.backgroundColor = 'var(--cyan)';
+    bar.style.backgroundColor = 'var(--status-info)';
     pbox.classList.remove('alert-flash');
   } else {
-    badge.className = 'live-hud-badge safe';
-    badge.textContent = 'NORMAL: ' + pct + '%';
-    bar.style.backgroundColor = 'var(--green)';
+    badge.className = 'live-hud-badge safe mono';
+    badge.textContent = 'NOMINAL: ' + pct + '%';
+    bar.style.backgroundColor = 'var(--status-success)';
     pbox.classList.remove('alert-flash');
   }
 }
@@ -1142,7 +1651,7 @@ function showFrame(i) {
   document.getElementById('timeTag').textContent = f.time_str || '00:00.0';
 
   if (chart) {
-    chart.data.datasets[0].pointRadius = frames.map((_, j) => j === frameIdx ? 6 : 2.5);
+    chart.data.datasets[0].pointRadius = frames.map((_, j) => j === frameIdx ? 5 : 2);
     chart.update('none');
   }
 }
@@ -1158,7 +1667,7 @@ function togglePlay() {
 function playVision() {
   if (!frames.length) return;
   isPlaying = true;
-  document.getElementById('playBtn').innerHTML = '&#9646;&#9646; Pause';
+  updatePlayBtnState(true);
   clearInterval(visionTimer);
   visionTimer = setInterval(() => {
     if (frameIdx >= frames.length - 1) {
@@ -1173,7 +1682,7 @@ function playVision() {
 function pauseVision() {
   isPlaying = false;
   clearInterval(visionTimer);
-  document.getElementById('playBtn').innerHTML = '&#9654; Play';
+  updatePlayBtnState(false);
 }
 
 function pauseAll() {
@@ -1206,7 +1715,6 @@ function seekScrubber(val) {
     nativeVideo.currentTime = val;
   } else {
     pauseVision();
-    // Find closest frame to val
     let bestIdx = 0;
     let minDiff = Infinity;
     frames.forEach((f, idx) => {
@@ -1221,8 +1729,7 @@ function toggleLoop() {
   isLooping = !isLooping;
   nativeVideo.loop = isLooping;
   const btn = document.getElementById('loopBtn');
-  btn.textContent = isLooping ? '\u{1F501} Loop' : '\u27A1 Once';
-  btn.style.color = isLooping ? 'var(--cyan)' : 'var(--muted)';
+  btn.style.color = isLooping ? '#38bdf8' : 'var(--text-tertiary)';
 }
 
 function setPlaybackSpeed(val) {
@@ -1243,7 +1750,7 @@ function highlightChartAtTime(t) {
     const diff = Math.abs(p.time - t);
     if (diff < minDiff) { minDiff = diff; bestIdx = idx; }
   });
-  chart.data.datasets[0].pointRadius = timelinePoints.map((_, j) => j === bestIdx ? 6 : 2.5);
+  chart.data.datasets[0].pointRadius = timelinePoints.map((_, j) => j === bestIdx ? 5 : 2);
   chart.update('none');
 }
 
@@ -1253,8 +1760,8 @@ function updateChartData() {
   const labels = pts.map(p => p.time.toFixed(1) + 's');
   const scores = pts.map(p => p.score);
   const isAnom = currentData ? currentData.is_anomaly : false;
-  const cColor = isAnom ? '#ff2e54' : '#00e676';
-  const cBg = isAnom ? 'rgba(255,46,84,.15)' : 'rgba(0,230,118,.15)';
+  const cColor = isAnom ? '#f43f5e' : '#10b981';
+  const cBg = isAnom ? 'rgba(244, 63, 94, 0.12)' : 'rgba(16, 185, 129, 0.12)';
 
   chart.data.labels = labels;
   chart.data.datasets[0].data = scores;
@@ -1276,20 +1783,20 @@ function initChart() {
         {
           label: 'Anomaly Score',
           data: [],
-          borderColor: '#00e5ff',
-          backgroundColor: 'rgba(0,229,255,.15)',
+          borderColor: '#38bdf8',
+          backgroundColor: 'rgba(56, 189, 248, 0.12)',
           borderWidth: 2,
           fill: true,
-          tension: 0.3,
-          pointRadius: 2.5,
-          pointHoverRadius: 6,
-          pointBackgroundColor: '#00e5ff'
+          tension: 0.25,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          pointBackgroundColor: '#38bdf8'
         },
         {
           label: 'Threshold (0.35)',
           data: [],
-          borderColor: '#ffab00',
-          borderDash: [5, 4],
+          borderColor: '#f59e0b',
+          borderDash: [4, 4],
           borderWidth: 1.5,
           pointRadius: 0,
           fill: false
@@ -1310,12 +1817,31 @@ function initChart() {
         }
       },
       scales: {
-        y: { min: 0, max: 1, grid: {color: 'rgba(255,255,255,.05)'}, ticks: {color: '#64748b', font:{size:9}, callback: v => (v*100)+'%'} },
-        x: { grid: {color: 'rgba(255,255,255,.05)'}, ticks: {color: '#64748b', font:{size:9}} }
+        y: {
+          min: 0,
+          max: 1,
+          grid: { color: 'rgba(255, 255, 255, 0.04)' },
+          ticks: { color: '#64748b', font: { family: "'JetBrains Mono', monospace", size: 9 }, callback: v => (v*100)+'%' }
+        },
+        x: {
+          grid: { color: 'rgba(255, 255, 255, 0.04)' },
+          ticks: { color: '#64748b', font: { family: "'JetBrains Mono', monospace", size: 9 }, maxTicksLimit: 12 }
+        }
       },
       plugins: {
-        legend: { labels: {color: '#94a3b8', font:{size:10}} },
-        tooltip: { callbacks: { label: c => 'Anomaly: ' + (c.raw*100).toFixed(1) + '%' } }
+        legend: {
+          labels: { color: '#94a3b8', font: { family: "'Inter', sans-serif", size: 10 }, boxWidth: 12, usePointStyle: true }
+        },
+        tooltip: {
+          backgroundColor: '#0f172a',
+          titleColor: '#94a3b8',
+          bodyColor: '#f8fafc',
+          borderColor: 'rgba(255, 255, 255, 0.1)',
+          borderWidth: 1,
+          padding: 8,
+          bodyFont: { family: "'JetBrains Mono', monospace", size: 11 },
+          callbacks: { label: c => ' Anomaly: ' + (c.raw*100).toFixed(1) + '%' }
+        }
       }
     }
   });
