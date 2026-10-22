@@ -153,11 +153,12 @@ def generate_dashboard_html(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    status_color = "#ef4444" if event.is_anomaly else "#22c55e"
-    status_bg = "rgba(239, 68, 68, 0.15)" if event.is_anomaly else "rgba(34, 197, 94, 0.15)"
-    status_text = "ANOMALY / AGGRESSION DETECTED" if event.is_anomaly else "NORMAL SURVEILLANCE ACTIVITY"
+    status_color = "#f43f5e" if event.is_anomaly else "#10b981"
+    status_bg = "rgba(244, 63, 94, 0.12)" if event.is_anomaly else "rgba(16, 185, 129, 0.12)"
+    status_border = "rgba(244, 63, 94, 0.28)" if event.is_anomaly else "rgba(16, 185, 129, 0.28)"
+    status_text = "ANOMALOUS INCIDENT DETECTED" if event.is_anomaly else "NOMINAL SURVEILLANCE ACTIVITY"
 
-    labels_json = json.dumps([f"Frame {kf}" for kf in event.keyframe_indices])
+    labels_json = json.dumps([f"KF {kf}" for kf in event.keyframe_indices])
     scores_json = json.dumps(event.timeline_scores)
 
     html_content = f"""<!DOCTYPE html>
@@ -165,127 +166,154 @@ def generate_dashboard_html(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARGUS Surveillance Dashboard</title>
+    <title>ARGUS Surveillance Incident Report</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {{
-            --bg-primary: #0f172a;
-            --bg-secondary: #1e293b;
+            --bg-base: #080b11;
+            --bg-surface: #121824;
+            --bg-subtle: #0d121c;
+            --border: rgba(255, 255, 255, 0.08);
             --text-primary: #f8fafc;
             --text-secondary: #94a3b8;
+            --text-tertiary: #64748b;
             --accent: #38bdf8;
-            --border: #334155;
         }}
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-primary);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-base);
             color: var(--text-primary);
             margin: 0;
-            padding: 24px;
+            padding: 28px;
+            -webkit-font-smoothing: antialiased;
+        }}
+        .container {{
+            max-width: 1100px;
+            margin: 0 auto;
         }}
         .header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
             border-bottom: 1px solid var(--border);
-            padding-bottom: 16px;
+            padding-bottom: 18px;
             margin-bottom: 24px;
         }}
         .title {{
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--accent);
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
+        }}
+        .brand-badge {{
+            font-size: 15px;
+            font-weight: 700;
+            letter-spacing: -0.2px;
+            color: var(--text-primary);
         }}
         .badge {{
-            padding: 6px 14px;
-            border-radius: 9999px;
-            font-size: 13px;
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 11px;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.05em;
+            font-family: 'JetBrains Mono', monospace;
         }}
         .grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 14px;
+            margin-bottom: 20px;
         }}
         .card {{
-            background-color: var(--bg-secondary);
+            background-color: var(--bg-surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
+            border-radius: 10px;
+            padding: 16px;
         }}
         .card-label {{
-            font-size: 12px;
-            color: var(--text-secondary);
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-tertiary);
             text-transform: uppercase;
             letter-spacing: 0.05em;
             margin-bottom: 6px;
         }}
         .card-value {{
-            font-size: 28px;
+            font-size: 24px;
             font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
         }}
         .chart-container {{
-            background-color: var(--bg-secondary);
+            background-color: var(--bg-surface);
             border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
         }}
         .meta-list {{
-            font-size: 14px;
+            font-size: 13px;
             color: var(--text-secondary);
-            line-height: 1.6;
+            line-height: 1.8;
+            font-family: 'Inter', sans-serif;
+        }}
+        .meta-list strong {{
+            color: var(--text-primary);
         }}
     </style>
 </head>
 <body>
-    <div class="header">
-        <div class="title">
-            <span>🛡️ ARGUS</span>
-            <span style="font-size: 14px; color: var(--text-secondary); font-weight: normal;">Adaptive Relational Graph Understanding System</span>
+    <div class="container">
+        <div class="header">
+            <div class="title">
+                <div>
+                    <div class="brand-badge">ARGUS &bull; Surveillance Incident Report</div>
+                    <div style="font-size: 11px; color: var(--text-tertiary); margin-top: 2px;">Causal Relational Graph Anomaly Detection</div>
+                </div>
+            </div>
+            <div class="badge" style="background: {status_bg}; color: {status_color}; border: 1px solid {status_border};">
+                {event.severity.value} &bull; {status_text}
+            </div>
         </div>
-        <div class="badge" style="background: {status_bg}; color: {status_color}; border: 1px solid {status_color};">
-            {event.severity.value} • {status_text}
-        </div>
-    </div>
 
-    <div class="grid">
-        <div class="card">
-            <div class="card-label">Peak Anomaly Score</div>
-            <div class="card-value" style="color: {status_color};">{event.peak_score:.4f}</div>
+        <div class="grid">
+            <div class="card">
+                <div class="card-label">Peak Anomaly Score</div>
+                <div class="card-value" style="color: {status_color};">{event.peak_score:.4f}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Mean Clip Score</div>
+                <div class="card-value">{event.mean_score:.4f}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Keyframes Processed</div>
+                <div class="card-value">{len(event.keyframe_indices)}</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Inference Throughput</div>
+                <div class="card-value" style="color: var(--accent);">{fps:.1f} <span style="font-size: 12px; color: var(--text-tertiary);">FPS</span></div>
+            </div>
         </div>
-        <div class="card">
-            <div class="card-label">Mean Clip Score</div>
-            <div class="card-value">{event.mean_score:.4f}</div>
-        </div>
-        <div class="card">
-            <div class="card-label">Keyframes Processed</div>
-            <div class="card-value">{len(event.keyframe_indices)}</div>
-        </div>
-        <div class="card">
-            <div class="card-label">Processing Throughput</div>
-            <div class="card-value" style="color: var(--accent);">{fps:.1f} <span style="font-size: 14px; color: var(--text-secondary);">FPS</span></div>
-        </div>
-    </div>
 
-    <div class="chart-container">
-        <h3 style="margin-top: 0; font-size: 16px; margin-bottom: 16px;">Keyframe Anomaly Timeline & Attention Modulation</h3>
-        <canvas id="timelineChart" height="90"></canvas>
-    </div>
+        <div class="chart-container">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary)">Causal Anomaly Probability Curve</span>
+                <span style="font-size:11px;color:var(--text-tertiary);font-family:'JetBrains Mono',monospace">Decision Threshold: 0.50</span>
+            </div>
+            <canvas id="timelineChart" height="80"></canvas>
+        </div>
 
-    <div class="card">
-        <div class="card-label">Stream & Model Metadata</div>
-        <div class="meta-list">
-            <div><strong>Source Stream:</strong> {event.video_source}</div>
-            <div><strong>Total Detected Entities:</strong> {event.num_detected_objects} bounding boxes</div>
-            <div><strong>Inference Latency:</strong> {latency_ms:.1f} ms / clip</div>
-            <div><strong>Decision Verdict:</strong> <span style="color: {status_color}; font-weight: bold;">{status_text}</span></div>
+        <div class="card">
+            <div class="card-label">Stream Telemetry & Metadata</div>
+            <div class="meta-list">
+                <div><strong>Source Stream:</strong> {event.video_source}</div>
+                <div><strong>Detected Entities:</strong> {event.num_detected_objects} bounding boxes</div>
+                <div><strong>Inference Latency:</strong> {latency_ms:.1f} ms / clip</div>
+                <div><strong>Classification Verdict:</strong> <span style="color: {status_color}; font-weight: 600;">{status_text}</span></div>
+            </div>
         </div>
     </div>
 
@@ -301,18 +329,18 @@ def generate_dashboard_html(
                         data: {scores_json},
                         borderColor: '{status_color}',
                         backgroundColor: '{status_bg}',
-                        borderWidth: 3,
+                        borderWidth: 2,
                         fill: true,
-                        tension: 0.3,
-                        pointRadius: 6,
-                        pointHoverRadius: 8
+                        tension: 0.25,
+                        pointRadius: 3,
+                        pointHoverRadius: 6
                     }},
                     {{
                         label: 'Decision Threshold (0.50)',
                         data: Array({len(event.timeline_scores)}).fill(0.5),
-                        borderColor: '#eab308',
-                        borderDash: [6, 6],
-                        borderWidth: 2,
+                        borderColor: '#f59e0b',
+                        borderDash: [4, 4],
+                        borderWidth: 1.5,
                         pointRadius: 0,
                         fill: false
                     }}
@@ -324,16 +352,16 @@ def generate_dashboard_html(
                     y: {{
                         min: 0,
                         max: 1.0,
-                        grid: {{ color: '#334155' }},
-                        ticks: {{ color: '#94a3b8' }}
+                        grid: {{ color: 'rgba(255, 255, 255, 0.04)' }},
+                        ticks: {{ color: '#64748b', font: {{ family: "'JetBrains Mono', monospace", size: 9 }} }}
                     }},
                     x: {{
-                        grid: {{ color: '#334155' }},
-                        ticks: {{ color: '#94a3b8' }}
+                        grid: {{ color: 'rgba(255, 255, 255, 0.04)' }},
+                        ticks: {{ color: '#64748b', font: {{ family: "'JetBrains Mono', monospace", size: 9 }} }}
                     }}
                 }},
                 plugins: {{
-                    legend: {{ labels: {{ color: '#f8fafc' }} }}
+                    legend: {{ labels: {{ color: '#94a3b8', font: {{ family: "'Inter', sans-serif", size: 10 }} }} }}
                 }}
             }}
         }});
