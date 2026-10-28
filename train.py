@@ -3,9 +3,11 @@ import io
 import json
 import os
 from pathlib import Path
+import random
 import shutil
 import time
 import yaml
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -15,6 +17,7 @@ from argus.config import ARGUSConfig
 from argus.data import VideoManifest, SyntheticSurveillance
 from argus.losses import anomaly_loss
 from argus.metrics import binary_metrics
+from argus.checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
 
 
 def format_duration(seconds: float) -> str:
@@ -90,12 +93,17 @@ def parse_args():
     parser.add_argument('--reset-epoch', action='store_true', help='Reset starting epoch number to 1 even when resuming weights.')
     parser.add_argument('--output-dir', type=Path, help='Output directory for checkpoints.')
     parser.add_argument('--max-batches', type=int, default=None, help='Max batches per epoch (for quick debug).')
+    parser.add_argument('--workers', type=int, default=None, help='Data loader worker processes.')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducible training.')
+    parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow trusted legacy pickle checkpoints that fail safe loading.')
     return parser.parse_args()
 
 
 def load_config(args) -> dict:
     config = {}
-    if args.config and args.config.exists():
+    if args.config and not args.config.exists():
+        raise FileNotFoundError(f"Configuration file not found: {args.config}")
+    if args.config:
         with open(args.config, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f) or {}
 
@@ -106,14 +114,14 @@ def load_config(args) -> dict:
     # CLI overrides
     manifest = args.manifest or data_cfg.get('train_manifest')
     val_manifest = args.val_manifest or data_cfg.get('val_manifest')
-    frames = args.frames or data_cfg.get('frames', 16)
-    image_size = args.image_size or model_cfg.get('image_size', 96)
+    frames = args.frames if args.frames is not None else data_cfg.get('frames', 16)
+    image_size = args.image_size if args.image_size is not None else model_cfg.get('image_size', 96)
 
-    epochs = args.epochs or train_cfg.get('epochs', 10)
-    batch_size = args.batch_size or train_cfg.get('batch_size', 4)
-    lr = args.lr or train_cfg.get('lr', 1e-4)
-    backbone_lr = args.backbone_lr or train_cfg.get('backbone_lr', None)
-    weight_decay = args.weight_decay or train_cfg.get('weight_decay', 1e-4)
+    epochs = args.epochs if args.epochs is not None else train_cfg.get('epochs', 10)
+    batch_size = args.batch_size if args.batch_size is not None else train_cfg.get('batch_size', 4)
+    lr = args.lr if args.lr is not None else train_cfg.get('lr', 1e-4)
+    backbone_lr = args.backbone_lr if args.backbone_lr is not None else train_cfg.get('backbone_lr', None)
+    weight_decay = args.weight_decay if args.weight_decay is not None else train_cfg.get('weight_decay', 1e-4)
     smoothness_weight = train_cfg.get('smoothness_weight', 0.1)
     sparsity_weight = train_cfg.get('sparsity_weight', 0.01)
     mil_weight = args.mil_weight if args.mil_weight is not None else train_cfg.get('mil_weight', 0.5)
@@ -146,18 +154,28 @@ def load_config(args) -> dict:
         'reset_epoch': reset_epoch,
         'output_dir': output_dir,
         'max_batches': args.max_batches,
+        'workers': args.workers if args.workers is not None else train_cfg.get('workers', 0),
+        'seed': args.seed if args.seed is not None else train_cfg.get('seed', 42),
+        'allow_unsafe_checkpoint': args.allow_unsafe_checkpoint,
         'model_cfg': model_cfg,
     }
 
 
-def create_loader(manifest_path, synthetic, frames, image_size, batch_size, shuffle=True, augment=False):
+def create_loader(manifest_path, synthetic, frames, image_size, batch_size, shuffle=True, augment=False, workers=0, pin_memory=False):
     if synthetic:
         ds = SyntheticSurveillance(count=48, frames=frames, size=image_size, augment=augment)
     elif manifest_path:
         ds = VideoManifest(manifest_path, frames=frames, image_size=image_size, augment=augment)
     else:
         return None
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=0)
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=workers,
+        pin_memory=pin_memory,
+        persistent_workers=workers > 0,
+    )
 
 
 def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None, scaler=None, use_amp=False):
@@ -184,7 +202,8 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
             out.scores.float(), y,
             smoothness_weight=smoothness_w,
             sparsity_weight=sparsity_w,
-            mil_weight=mil_w
+            mil_weight=mil_w,
+            valid_mask=out.valid_mask,
         )
 
         optimizer.zero_grad()
@@ -200,7 +219,7 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
             optimizer.step()
 
         total_loss += loss.item()
-        preds = out.scores.max(dim=1).values.detach()
+        preds = out.scores.masked_fill(~out.valid_mask, float('-inf')).max(dim=1).values.detach()
         all_preds.append(preds)
         all_labels.append(y.detach())
 
@@ -257,11 +276,12 @@ def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, e
             out.scores.float(), y,
             smoothness_weight=smoothness_w,
             sparsity_weight=sparsity_w,
-            mil_weight=mil_w
+            mil_weight=mil_w,
+            valid_mask=out.valid_mask,
         )
 
         total_loss += loss.item()
-        preds = out.scores.max(dim=1).values.detach()
+        preds = out.scores.masked_fill(~out.valid_mask, float('-inf')).max(dim=1).values.detach()
         all_preds.append(preds)
         all_labels.append(y.detach())
 
@@ -288,6 +308,21 @@ def main():
     args = parse_args()
     cfg = load_config(args)
 
+    if cfg['epochs'] <= 0 or cfg['batch_size'] <= 0 or cfg['frames'] <= 0 or cfg['image_size'] <= 0:
+        raise ValueError("epochs, batch_size, frames, and image_size must be positive")
+    if cfg['lr'] < 0 or cfg['weight_decay'] < 0 or cfg['workers'] < 0:
+        raise ValueError("learning rates, weight decay, and workers cannot be negative")
+    if cfg['max_batches'] is not None and cfg['max_batches'] <= 0:
+        raise ValueError("max_batches must be positive when provided")
+    if cfg['resume'] and cfg['pretrained']:
+        raise ValueError("Use either --resume or --pretrained, not both")
+
+    random.seed(cfg['seed'])
+    np.random.seed(cfg['seed'])
+    torch.manual_seed(cfg['seed'])
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg['seed'])
+
     if not cfg['synthetic'] and not cfg['manifest']:
         raise ValueError("Either --synthetic or a valid --manifest / config train_manifest is required.")
 
@@ -303,13 +338,15 @@ def main():
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint to resume from not found: {checkpoint_path}")
         print(f"[*] Loading checkpoint: {checkpoint_path}")
-        with open(checkpoint_path, 'rb') as f:
-            checkpoint_bytes = io.BytesIO(f.read())
-        checkpoint_data = torch.load(checkpoint_bytes, map_location=device, weights_only=False)
+        checkpoint_data = load_checkpoint(
+            checkpoint_path,
+            map_location=device,
+            allow_unsafe=cfg['allow_unsafe_checkpoint'],
+        )
 
         # Restore architecture config directly from checkpoint if available
         if isinstance(checkpoint_data, dict) and 'config' in checkpoint_data and checkpoint_data['config']:
-            model_config = ARGUSConfig.from_dict(checkpoint_data['config'])
+            model_config = ARGUSConfig.from_dict(checkpoint_data['config'], strict=True)
             # If CLI image_size was explicitly passed, override resolution
             if args.image_size:
                 model_config.image_size = args.image_size
@@ -317,20 +354,24 @@ def main():
                 cfg['image_size'] = model_config.image_size
             print(f"  [*] Using architecture configuration from checkpoint: dim={model_config.dim}, layers={model_config.temporal_layers}, img_size={model_config.image_size}")
         else:
-            model_config = ARGUSConfig.from_dict(cfg['model_cfg'])
+            model_config = ARGUSConfig.from_dict(cfg['model_cfg'], strict=True)
             model_config.image_size = cfg['image_size']
     else:
         # Build model from config file
-        model_config = ARGUSConfig.from_dict(cfg['model_cfg'])
+        model_config = ARGUSConfig.from_dict(cfg['model_cfg'], strict=True)
         model_config.image_size = cfg['image_size']
 
     model = ARGUS(config=model_config).to(device)
+    if checkpoint_data is not None:
+        validate_component_metadata(checkpoint_data, model)
 
-    if cfg.get('pretrained') and Path(cfg['pretrained']).exists():
+    if cfg.get('pretrained'):
         pre_path = Path(cfg['pretrained'])
+        if not pre_path.is_file():
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {pre_path}")
         print(f"Loading pre-trained weights from: {pre_path}")
-        pre_data = torch.load(pre_path, map_location='cpu', weights_only=False)
-        pre_state = pre_data['model'] if (isinstance(pre_data, dict) and 'model' in pre_data) else pre_data
+        pre_data = load_checkpoint(pre_path, map_location='cpu', allow_unsafe=cfg['allow_unsafe_checkpoint'])
+        pre_state = model_state_dict(pre_data)
         model_state = model.state_dict()
         matching = {k: v for k, v in pre_state.items() if k in model_state and model_state[k].shape == v.shape}
         missing, unexpected = model.load_state_dict(matching, strict=False)
@@ -338,7 +379,7 @@ def main():
 
     if cfg['resume'] and checkpoint_data is not None:
         if isinstance(checkpoint_data, dict) and 'model' in checkpoint_data:
-            model.load_state_dict(checkpoint_data['model'])
+            model.load_state_dict(model_state_dict(checkpoint_data))
             ckpt_epoch = checkpoint_data.get('epoch', 0)
             if cfg['reset_epoch']:
                 start_epoch = 1
@@ -348,10 +389,10 @@ def main():
                 start_epoch = ckpt_epoch + 1
             prev_metrics = checkpoint_data.get('val_metrics') or checkpoint_data.get('train_metrics')
             if prev_metrics and 'f1' in prev_metrics:
-                best_score = prev_metrics['f1']
+                best_score = checkpoint_data.get('best_score', prev_metrics['f1'])
             print(f"  [OK] Successfully loaded weights (Checkpoint Epoch: {ckpt_epoch} | Resuming as Epoch {start_epoch} | Best F1: {best_score:.4f})")
         else:
-            model.load_state_dict(checkpoint_data)
+            model.load_state_dict(model_state_dict(checkpoint_data))
             print(f"  [OK] Successfully loaded model state dictionary.")
 
     if cfg['unfreeze_backbone'] and model.backbone is not None:
@@ -377,7 +418,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg['epochs'], eta_min=1e-6)
 
     use_amp = (device == 'cuda')
-    scaler = torch.amp.GradScaler(enabled=True) if use_amp else None
+    scaler = torch.cuda.amp.GradScaler(enabled=True) if use_amp else None
 
     if cfg['resume'] and not cfg['reset_optimizer']:
         if isinstance(checkpoint_data, dict) and 'optimizer' in checkpoint_data:
@@ -389,17 +430,18 @@ def main():
         if isinstance(checkpoint_data, dict) and 'scheduler' in checkpoint_data:
             try:
                 scheduler.load_state_dict(checkpoint_data['scheduler'])
+                scheduler.T_max = scheduler.last_epoch + cfg['epochs']
                 print("  [OK] Restored scheduler state from checkpoint.")
             except Exception as e:
                 print(f"  [!] Note: Reinitialized scheduler ({e}).")
 
     train_loader = create_loader(
         cfg['manifest'], cfg['synthetic'], cfg['frames'], cfg['image_size'],
-        cfg['batch_size'], shuffle=True, augment=cfg['augment']
+        cfg['batch_size'], shuffle=True, augment=cfg['augment'], workers=cfg['workers'], pin_memory=use_amp
     )
     val_loader = create_loader(
         cfg['val_manifest'], cfg['synthetic'], cfg['frames'], cfg['image_size'],
-        cfg['batch_size'], shuffle=False, augment=False
+        cfg['batch_size'], shuffle=False, augment=False, workers=cfg['workers'], pin_memory=use_amp
     ) if (cfg['val_manifest'] or cfg['synthetic']) else None
 
     total_epochs = start_epoch + cfg['epochs'] - 1
@@ -483,6 +525,9 @@ def main():
             'config': model_config.to_dict(),
             'train_metrics': train_metrics,
             'val_metrics': val_metrics,
+            'best_score': max(best_score, current_score),
+            'format_version': 2,
+            'components': model.component_metadata(),
         }
 
         safe_torch_save(checkpoint, output_dir / 'latest.pt')

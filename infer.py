@@ -6,7 +6,6 @@ Runs end-to-end anomaly & aggression detection on an input video or frame folder
 from __future__ import annotations
 
 import argparse
-import io
 import json
 from pathlib import Path
 import time
@@ -17,6 +16,7 @@ import numpy as np
 from argus import ARGUS, AlertDispatcher, generate_dashboard_html
 from argus.config import ARGUSConfig
 from argus.data import load_clip_from_path
+from argus.checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
 
 
 def format_duration(seconds: float) -> str:
@@ -41,6 +41,9 @@ def parse_args():
     parser.add_argument('--output-json', type=Path, default=None, help='Path to save inference result JSON.')
     parser.add_argument('--dashboard', type=Path, default=None, help='Optional path to export interactive HTML dashboard.')
     parser.add_argument('--stream', action='store_true', help='Update temporal streaming memory.')
+    parser.add_argument('--stream-id', type=str, default='default', help='Stable source identity for streaming memory.')
+    parser.add_argument('--allow-random-model', action='store_true', help='Explicitly allow untrained random weights for development.')
+    parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow a trusted legacy pickle checkpoint.')
     return parser.parse_args()
 
 
@@ -49,6 +52,10 @@ def main():
     input_path = Path(args.input)
     if not input_path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
+    if args.frames <= 0:
+        raise ValueError("frames must be positive")
+    if not 0.0 <= args.threshold <= 1.0:
+        raise ValueError("threshold must be in [0, 1]")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Inference Device: {device.upper()}")
@@ -58,23 +65,25 @@ def main():
     # Step 1: Model loading
     t0 = time.perf_counter()
     if args.checkpoint.exists():
-        with open(args.checkpoint, 'rb') as f:
-            checkpoint_bytes = io.BytesIO(f.read())
-        state = torch.load(checkpoint_bytes, map_location=device, weights_only=False)
+        state = load_checkpoint(args.checkpoint, map_location=device, allow_unsafe=args.allow_unsafe_checkpoint)
         saved_cfg = state.get('config', {})
-        config = ARGUSConfig.from_dict(saved_cfg) if saved_cfg else ARGUSConfig()
+        config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
         if args.image_size is not None:
             config.image_size = args.image_size
         model = ARGUS(config=config).to(device)
-        state_dict = state['model'] if isinstance(state, dict) and 'model' in state else state
-        model.load_state_dict(state_dict)
+        validate_component_metadata(state, model)
+        model.load_state_dict(model_state_dict(state))
         load_time = time.perf_counter() - t0
         print(f"[OK] [1/3] Loaded model checkpoint: {args.checkpoint} (Epoch {state.get('epoch', '?') if isinstance(state, dict) else '?'}) in {format_duration(load_time)}")
-    else:
-        print(f"Notice: Checkpoint {args.checkpoint} not found. Running with initialized weights.")
+    elif args.allow_random_model:
+        print(f"DEVELOPMENT MODE: checkpoint {args.checkpoint} not found; using untrained random weights.")
         config = ARGUSConfig(image_size=args.image_size or 96)
         model = ARGUS(config=config).to(device)
         load_time = time.perf_counter() - t0
+    else:
+        raise FileNotFoundError(
+            f"Checkpoint not found: {args.checkpoint}. Use --allow-random-model only for explicit development tests."
+        )
 
     model.eval()
 
@@ -90,13 +99,14 @@ def main():
     t2 = time.perf_counter()
     print(f"[*] [3/3] Running ARGUS adaptive sampling + scene graph reasoning...")
     with torch.no_grad():
-        out = model(clip_batch, stream=args.stream)
+        out = model(clip_batch, stream=args.stream, stream_id=args.stream_id)
     infer_time = time.perf_counter() - t2
     print(f"[OK] [3/3] Neural inference finished in {format_duration(infer_time)}")
 
     total_pipeline_time = time.perf_counter() - overall_start
 
-    scores_seq = out.scores[0].cpu().numpy().tolist()
+    valid_length = int(out.sequence_lengths[0].item())
+    scores_seq = out.scores[0, :valid_length].cpu().numpy().tolist()
     max_score = float(np.max(scores_seq))
     mean_score = float(np.mean(scores_seq))
     is_anomaly = bool(max_score >= args.threshold)

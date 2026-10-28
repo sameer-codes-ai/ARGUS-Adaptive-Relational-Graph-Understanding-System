@@ -10,6 +10,7 @@ from .metrics import binary_metrics
 from .data import VideoManifest, SyntheticSurveillance
 from .explain import ExplainabilityEngine
 from .alerts import AlertDispatcher, AlertSeverity, AlertEvent, generate_dashboard_html
+from .checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
 
 __all__ = [
     'ARGUSConfig',
@@ -37,4 +38,7 @@ __all__ = [
     'AlertSeverity',
     'AlertEvent',
     'generate_dashboard_html',
+    'load_checkpoint',
+    'model_state_dict',
+    'validate_component_metadata',
 ]

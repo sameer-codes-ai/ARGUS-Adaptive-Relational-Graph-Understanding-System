@@ -8,6 +8,7 @@ Implements Module 2 of the ARGUS research design:
 
 from __future__ import annotations
 import math
+import warnings
 from typing import List, Optional, Tuple
 import torch
 import torch.nn as nn
@@ -115,16 +116,23 @@ class SpatialBackbone(nn.Module):
         self,
         name: str = "convnext_tiny",
         out_dim: int = 256,
-        frozen: bool = True
+        frozen: bool = True,
+        pretrained: bool = True,
+        allow_fallback: bool = True,
     ):
         super().__init__()
         self.name = name
         self.out_dim = out_dim
         self.use_timm = False
 
+        self.pretrained_requested = pretrained
+        self.fallback_reason: Optional[str] = None
+
         try:
+            if name in {"native", "native_convnext", "native_convnext_tiny"}:
+                raise ImportError("native backbone explicitly selected")
             import timm
-            self.model = timm.create_model(name, pretrained=True, features_only=True)
+            self.model = timm.create_model(name, pretrained=pretrained, features_only=True)
             self.use_timm = True
             with torch.no_grad():
                 dummy = torch.randn(1, 3, 128, 128)
@@ -137,8 +145,22 @@ class SpatialBackbone(nn.Module):
                     self.token_stage_idx = i
                     break
             self.feat_dim = self.stage_dims[self.token_stage_idx]
-        except Exception:
+        except Exception as exc:
+            explicit_native = name in {"native", "native_convnext", "native_convnext_tiny"}
+            if not explicit_native and not allow_fallback:
+                raise RuntimeError(
+                    f"Unable to initialize requested backbone '{name}'. Install timm and make "
+                    "the pretrained weights available, or explicitly enable component fallbacks."
+                ) from exc
             # Native ConvNeXt fallback
+            self.fallback_reason = str(exc)
+            if not explicit_native:
+                warnings.warn(
+                    f"Falling back to a randomly initialized native ConvNeXt because '{name}' "
+                    f"could not be loaded: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             self.use_timm = False
             self.model = NativeConvNeXt(depths=[2, 2, 4, 2], dims=[64, 128, 256, 384])
             # Stage 2 has stride 16 (4 * 2 * 2 = 16)
@@ -150,6 +172,12 @@ class SpatialBackbone(nn.Module):
             nn.LayerNorm(self.feat_dim),
             nn.Linear(self.feat_dim, out_dim),
         )
+
+        if frozen and self.fallback_reason is not None and pretrained:
+            raise RuntimeError(
+                "Refusing to freeze a random fallback backbone. Select an explicit native backbone "
+                "with backbone_pretrained=false, or leave it trainable."
+            )
 
         if frozen:
             self.freeze()

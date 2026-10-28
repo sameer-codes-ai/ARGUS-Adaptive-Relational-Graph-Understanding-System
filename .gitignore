@@ -4,6 +4,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.cache/
+.testdeps/
+.wheels/
+datasets/
 
 # Temporary data caches
 data/cache/
