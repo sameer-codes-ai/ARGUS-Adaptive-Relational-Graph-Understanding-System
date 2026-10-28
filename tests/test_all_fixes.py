@@ -288,5 +288,7 @@ def test_fix_13_vectorized_semantic_tagging():
     assert isinstance(res, DetectionResult)
     assert res.semantic_types.ndim == 1
     assert len(res.semantic_types) == len(res.boxes)
-    # Semantic types should be in {0, 1, 2}
-    assert (res.semantic_types >= 0).all() and (res.semantic_types <= 2).all()
+    # Semantic types should be in {0, 1, 4} (person, vehicle, other object; never fake bag or weapon)
+    assert (res.semantic_types >= 0).all() and (res.semantic_types <= 4).all()
+    # Honest fallback: never fake weapon (3) or bag (2)
+    assert not ((res.semantic_types == 2) | (res.semantic_types == 3)).any()

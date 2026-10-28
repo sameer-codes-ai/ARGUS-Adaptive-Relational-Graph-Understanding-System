@@ -29,6 +29,9 @@ def find_frame_files(dir_path: Path) -> list[Path]:
     return frame_files
 
 
+_DIR_FRAME_CACHE: dict[Path, dict[str, list[Path]]] = {}
+
+
 def load_clip_from_path(
     path: str | Path,
     target_frames: int = 16,
@@ -37,8 +40,25 @@ def load_clip_from_path(
     path = Path(path)
     if target_frames <= 0 or image_size <= 0:
         raise ValueError("target_frames and image_size must be positive")
+
+    prefix_files: list[Path] | None = None
     if not path.exists():
-        raise FileNotFoundError(f"Media path not found: {path}")
+        parent = path.parent
+        if parent.is_dir():
+            if parent not in _DIR_FRAME_CACHE:
+                index: dict[str, list[Path]] = {}
+                for f in parent.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+                        pfx = f.stem.rsplit('_', 1)[0]
+                        index.setdefault(pfx, []).append(f)
+                for pfx in index:
+                    index[pfx].sort(key=natural_sort_key)
+                _DIR_FRAME_CACHE[parent] = index
+            candidate_pfx = path.stem if path.suffix else path.name
+            if candidate_pfx in _DIR_FRAME_CACHE[parent]:
+                prefix_files = _DIR_FRAME_CACHE[parent][candidate_pfx]
+        if prefix_files is None:
+            raise FileNotFoundError(f"Media path not found: {path}")
 
     if path.is_file() and path.suffix.lower() == '.pt':
         clip = torch.load(path, map_location='cpu', weights_only=True)
@@ -67,8 +87,8 @@ def load_clip_from_path(
         if clip.max() > 1.0:
             clip = clip / 255.0
 
-    elif path.is_dir():
-        frame_files = find_frame_files(path)
+    elif path.is_dir() or prefix_files is not None:
+        frame_files = prefix_files if prefix_files is not None else find_frame_files(path)
         if not frame_files:
             raise ValueError(f"No image frames found in directory: {path}")
 

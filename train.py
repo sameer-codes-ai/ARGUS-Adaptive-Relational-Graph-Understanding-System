@@ -17,7 +17,12 @@ from argus.config import ARGUSConfig
 from argus.data import VideoManifest, SyntheticSurveillance
 from argus.losses import anomaly_loss
 from argus.metrics import binary_metrics
-from argus.checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
+from argus.checkpoint import (
+    load_checkpoint,
+    load_partial_checkpoint,
+    model_state_dict,
+    validate_component_metadata,
+)
 
 
 def format_duration(seconds: float) -> str:
@@ -373,9 +378,21 @@ def main():
         pre_data = load_checkpoint(pre_path, map_location='cpu', allow_unsafe=cfg['allow_unsafe_checkpoint'])
         pre_state = model_state_dict(pre_data)
         model_state = model.state_dict()
-        matching = {k: v for k, v in pre_state.items() if k in model_state and model_state[k].shape == v.shape}
-        missing, unexpected = model.load_state_dict(matching, strict=False)
-        print(f"  [OK] Initialized {len(matching)}/{len(model_state)} matching parameter tensors from {pre_path.name}.")
+        gat_mismatch = (
+            "edge_gat.proj.weight" in pre_state
+            and "edge_gat.proj.weight" in model_state
+            and pre_state["edge_gat.proj.weight"].shape != model_state["edge_gat.proj.weight"].shape
+        )
+        if gat_mismatch:
+            partial_info = load_partial_checkpoint(model, pre_data)
+            print(
+                f"  [OK] Partial schema initialization: loaded {len(partial_info['loaded'])}/{len(model_state)} "
+                f"unchanged tensors from {pre_path.name} (initialized EdgeGAT fresh for {model.cfg.semantic_schema_version})."
+            )
+        else:
+            matching = {k: v for k, v in pre_state.items() if k in model_state and model_state[k].shape == v.shape}
+            model.load_state_dict(matching, strict=False)
+            print(f"  [OK] Initialized {len(matching)}/{len(model_state)} matching parameter tensors from {pre_path.name}.")
 
     if cfg['resume'] and checkpoint_data is not None:
         if isinstance(checkpoint_data, dict) and 'model' in checkpoint_data:
@@ -527,6 +544,7 @@ def main():
             'val_metrics': val_metrics,
             'best_score': max(best_score, current_score),
             'format_version': 2,
+            'semantic_schema_version': getattr(model_config, 'semantic_schema_version', 'threat5'),
             'components': model.component_metadata(),
         }
 

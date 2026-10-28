@@ -1225,12 +1225,28 @@ footer a:hover {
         Spatial Scene Graph (EdgeGAT)
       </div>
       <div class="tech-row">
+        <span class="tech-label">Detector Engine</span>
+        <span class="tech-val mono" id="techDetector" style="color:var(--text-primary)">YOLOv11 Semantic</span>
+      </div>
+      <div class="tech-row">
         <span class="tech-label">Detected Entities</span>
         <span class="tech-val mono" id="techEntities">16 Boxes</span>
       </div>
       <div class="tech-row">
         <span class="tech-label">Relational Edges</span>
         <span class="tech-val mono" id="techEdges" style="color:#60a5fa">8 Pairs</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Person Interactions</span>
+        <span class="tech-val mono" id="techPersonInteractions" style="color:#60a5fa">0 P2P</span>
+      </div>
+      <div class="tech-row">
+        <span class="tech-label">Threat Relations</span>
+        <span class="tech-val mono" id="techThreatEdges" style="color:#f43f5e">0 P2W</span>
+      </div>
+      <div class="tech-row" id="techEvidenceRow" style="display:none">
+        <span class="tech-label">Key Evidence</span>
+        <span class="tech-val mono" id="techEvidence" style="color:#fb7185">None</span>
       </div>
       <div class="tech-row">
         <span class="tech-label">Visual Token Pruning</span>
@@ -1444,8 +1460,36 @@ function applyData(d) {
 
   document.getElementById('metricFps').textContent = d.fps + ' FPS';
   document.getElementById('metricReduction').textContent = '-' + d.frame_reduction_pct + '%';
-  document.getElementById('techEntities').textContent = d.num_entities + ' Entities';
+  if (d.object_counts && Object.keys(d.object_counts).length > 0) {
+    const p = d.person_count ?? d.object_counts.person ?? 0;
+    const v = d.vehicle_count ?? d.object_counts.vehicle ?? 0;
+    const b = d.bag_count ?? d.object_counts.bag ?? 0;
+    const w = d.weapon_count ?? d.object_counts.weapon ?? 0;
+    const o = d.other_count ?? d.object_counts.other_object ?? 0;
+    document.getElementById('techEntities').textContent = `${d.num_entities} (${p}P ${v}V ${b}B ${w}W ${o}O)`;
+  } else {
+    document.getElementById('techEntities').textContent = d.num_entities + ' Entities';
+  }
   document.getElementById('techEdges').textContent = Math.max(1, Math.round(d.num_entities * 0.75)) + ' Pairs';
+  if (document.getElementById('techDetector')) {
+    const isYolo = d.detector_implementation === 'yolo';
+    document.getElementById('techDetector').textContent = isYolo ? 'YOLOv11 Semantic' : 'Heuristic Proposals';
+    document.getElementById('techDetector').style.color = isYolo ? '#38bdf8' : '#f59e0b';
+  }
+  if (document.getElementById('techPersonInteractions')) {
+    document.getElementById('techPersonInteractions').textContent = (d.num_person_interactions || 0) + ' P2P';
+  }
+  if (document.getElementById('techThreatEdges')) {
+    document.getElementById('techThreatEdges').textContent = (d.person_weapon_edges || 0) + ' P2W';
+  }
+  if (document.getElementById('techEvidenceRow')) {
+    if (d.evidence_details && d.evidence_details.length > 0) {
+      document.getElementById('techEvidenceRow').style.display = 'flex';
+      document.getElementById('techEvidence').textContent = d.evidence_details.join(', ');
+    } else {
+      document.getElementById('techEvidenceRow').style.display = 'none';
+    }
+  }
   document.getElementById('techStride').textContent = (d.total_input_frames || 32) + ' Fr • ' + (d.native_fps || 25) + ' FPS';
   document.getElementById('techDecode').textContent = d.timings.decode_ms + ' ms';
   document.getElementById('techInfer').textContent = (d.timings.infer_ms/1000).toFixed(2) + ' s';

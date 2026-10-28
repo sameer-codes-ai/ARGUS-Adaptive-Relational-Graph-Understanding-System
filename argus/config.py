@@ -22,10 +22,11 @@ class ARGUSConfig:
     use_pretrained_backbone: bool = False
     backbone_name: str = 'convnext_tiny'
     backbone_frozen: bool = True
-    # ── Outer layer: Semantic Detection ──
+    # ── Outer layer: Semantic Detection & Schema ──
     use_semantic_detector: bool = False
     detector_name: str = 'yolo11n.pt'
     detector_confidence: float = 0.3
+    semantic_schema_version: str = 'threat5'  # 'threat5' (5-class: person, vehicle, bag, weapon, other) or 'legacy3' (3-class)
     # ── Outer layer: RoI node features ──
     node_visual_dim: int = 0  # Set > 0 to append RoI features to graph nodes
     # Optional components must never silently change the architecture in production.
@@ -34,6 +35,8 @@ class ARGUSConfig:
     tracking_iou_threshold: float = 0.1
 
     def validate(self) -> 'ARGUSConfig':
+        if self.semantic_schema_version not in {'threat5', 'legacy3'}:
+            raise ValueError(f"Unknown semantic_schema_version: {self.semantic_schema_version}. Must be 'threat5' or 'legacy3'")
         if self.image_size <= 0:
             raise ValueError("image_size must be positive")
         if self.patch_size <= 0 or self.patch_size > self.image_size:

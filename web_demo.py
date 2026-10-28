@@ -188,7 +188,10 @@ def annotate_frame(
     threshold: float,
     frame_idx: int,
     total_frames: int,
-    orig_idx: int
+    orig_idx: int,
+    semantic_types: Optional[torch.Tensor] = None,
+    scores: Optional[torch.Tensor] = None,
+    detector_impl: str = "yolo",
 ) -> np.ndarray:
     """
     Renders clean, high-definition surveillance OSD, actor bounding brackets, and relational scene graph edges.
@@ -224,7 +227,7 @@ def annotate_frame(
             cy = (y1 + y2) // 2
             box_coords.append((x1, y1, x2, y2, cx, cy))
 
-        # Draw Relational Scene Graph Edges (P2P interactions)
+        # Draw Relational Scene Graph Edges (P2P, P2W, P2B interactions)
         for i in range(len(box_coords)):
             for j in range(i + 1, len(box_coords)):
                 x1_i, y1_i, x2_i, y2_i, cx_i, cy_i = box_coords[i]
@@ -232,17 +235,69 @@ def annotate_frame(
                 dist = np.hypot(cx_i - cx_j, cy_i - cy_j) / max(w, 1)
 
                 if dist < 0.42:
-                    edge_color = theme_bgr if is_anomaly else (120, 130, 145)
-                    thickness = 2 if is_anomaly else 1
+                    ti = int(semantic_types[i].item() if hasattr(semantic_types[i], 'item') else semantic_types[i]) if semantic_types is not None and i < len(semantic_types) else 4
+                    tj = int(semantic_types[j].item() if hasattr(semantic_types[j], 'item') else semantic_types[j]) if semantic_types is not None and j < len(semantic_types) else 4
+
+                    is_p2w = (detector_impl == "yolo") and ((ti == 0 and tj == 3) or (ti == 3 and tj == 0))
+                    is_p2b = (detector_impl == "yolo") and ((ti == 0 and tj == 2) or (ti == 2 and tj == 0))
+                    is_p2p = (ti == 0 and tj == 0)
+
+                    if is_p2w:
+                        edge_color = (40, 40, 245)
+                        thickness = 3
+                        tag = "THREAT"
+                    elif is_p2b:
+                        edge_color = (11, 158, 245)
+                        thickness = 2
+                        tag = "P2B"
+                    elif is_p2p:
+                        edge_color = theme_bgr if is_anomaly else (120, 130, 145)
+                        thickness = 2 if is_anomaly else 1
+                        tag = "P2P" if is_anomaly else "PROX"
+                    else:
+                        edge_color = (120, 130, 145)
+                        thickness = 1
+                        tag = "REL"
+
                     cv2.line(annotated, (cx_i, cy_i), (cx_j, cy_j), edge_color, thickness, cv2.LINE_AA)
                     mx, my = (cx_i + cx_j) // 2, (cy_i + cy_j) // 2
-                    tag = "REL" if is_anomaly else "PROX"
                     cv2.putText(annotated, tag, (mx - 10, my - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, edge_color, 1, cv2.LINE_AA)
 
-        # Draw Bounding Boxes with Actor Labels
+        # Draw Bounding Boxes with Semantic Labels & Confidences
         for idx, (x1, y1, x2, y2, cx, cy) in enumerate(box_coords):
-            label = f"PERSON {idx + 1:02d}" if idx % 2 == 0 else f"OBJECT {idx + 1:02d}"
-            box_col = theme_bgr if is_anomaly else (180, 170, 140)
+            sem_id = 4
+            conf_val = 1.0
+            if semantic_types is not None and idx < len(semantic_types):
+                sem_id = int(semantic_types[idx].item() if hasattr(semantic_types[idx], 'item') else semantic_types[idx])
+            if scores is not None and idx < len(scores):
+                conf_val = float(scores[idx].item() if hasattr(scores[idx], 'item') else scores[idx])
+
+            if detector_impl in {"heuristic", "grid"}:
+                # Fallback mode: honestly label broad heuristic proposals without fake weapon/bag claims
+                if sem_id == 0:
+                    label = f"PERSON [H]"
+                elif sem_id == 1:
+                    label = f"VEHICLE [H]"
+                else:
+                    label = f"OBJECT [H]"
+                box_col = theme_bgr if is_anomaly else (180, 170, 140)
+            else:
+                # Real YOLO recognition
+                if sem_id == 3:
+                    label = f"KNIFE {conf_val:.2f}"
+                    box_col = (40, 40, 245)  # Crimson threat
+                elif sem_id == 2:
+                    label = f"BAG {conf_val:.2f}"
+                    box_col = (11, 158, 245)  # Amber
+                elif sem_id == 0:
+                    label = f"PERSON {conf_val:.2f}"
+                    box_col = theme_bgr if is_anomaly else (180, 170, 140)
+                elif sem_id == 1:
+                    label = f"VEHICLE {conf_val:.2f}"
+                    box_col = (200, 160, 50)
+                else:
+                    label = f"OBJECT {conf_val:.2f}"
+                    box_col = (140, 150, 160)
 
             # Minimalist corner brackets for professional CCTV look
             cv2.rectangle(annotated, (x1, y1), (x2, y2), box_col, 1)
@@ -257,8 +312,15 @@ def annotate_frame(
             cv2.line(annotated, (x2, y2), (x2, y2 - tick), box_col, 2)
 
             # Dark translucent label pill
-            cv2.rectangle(annotated, (x1, max(0, y1 - 18)), (x1 + 72, max(0, y1)), (10, 14, 20), -1)
-            cv2.putText(annotated, label, (x1 + 4, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (220, 230, 240), 1, cv2.LINE_AA)
+            pill_w = max(72, len(label) * 8 + 10)
+            if y1 >= 18:
+                pill_y1, pill_y2 = y1 - 18, y1
+                text_y = y1 - 4
+            else:
+                pill_y1, pill_y2 = y2, min(h, y2 + 18)
+                text_y = min(h - 2, y2 + 14)
+            cv2.rectangle(annotated, (x1, pill_y1), (min(w, x1 + pill_w), pill_y2), (10, 14, 20), -1)
+            cv2.putText(annotated, label, (x1 + 4, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (220, 230, 240), 1, cv2.LINE_AA)
 
     # ── Top Surveillance OSD Bar ──────────────────────────────────────────
     overlay = annotated.copy()
@@ -497,6 +559,9 @@ def process_video_inference(
 
             frame_bgr = cv2.resize(frame_bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
             boxes = out.boxes[0][idx] if (out.boxes and idx < len(out.boxes[0])) else None
+            sem_types = out.semantic_types[0][idx] if (getattr(out, 'semantic_types', None) and idx < len(out.semantic_types[0])) else None
+            det_scores = out.detection_scores[0][idx] if (getattr(out, 'detection_scores', None) and idx < len(out.detection_scores[0])) else None
+            det_impl = getattr(out, 'detector_impl', 'yolo')
 
             annotated = annotate_frame(
                 frame_bgr=frame_bgr,
@@ -505,7 +570,10 @@ def process_video_inference(
                 threshold=threshold,
                 frame_idx=idx,
                 total_frames=len(sampled_indices),
-                orig_idx=actual_video_frame
+                orig_idx=actual_video_frame,
+                semantic_types=sem_types,
+                scores=det_scores,
+                detector_impl=det_impl,
             )
 
             _, buf = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -539,6 +607,21 @@ def process_video_inference(
     fps = float(len(sampled_indices) / max(infer_time_ms / 1000.0, 1e-4))
     frame_reduction = round((1.0 - (len(sampled_indices) / max(frames, 1))) * 100.0, 1)
 
+    det_impl = getattr(out, 'detector_impl', 'yolo')
+    dispatcher = AlertDispatcher(threshold=threshold)
+    alert_event = dispatcher.dispatch(
+        video_source=str(source_path),
+        timeline_scores=[round(s, 4) for s in scores],
+        keyframe_indices=sampled_indices,
+        boxes_per_frame=out.boxes[0] if out.boxes else None,
+        semantic_types_per_frame=out.semantic_types[0] if getattr(out, 'semantic_types', None) else None,
+        detection_scores_per_frame=out.detection_scores[0] if getattr(out, 'detection_scores', None) else None,
+        edge_indices_per_frame=out.edge_indices[0] if getattr(out, 'edge_indices', None) else None,
+        edge_attrs_per_frame=out.edge_attrs[0] if getattr(out, 'edge_attrs', None) else None,
+        detector_impl=det_impl,
+        class_ids_per_frame=out.class_ids[0] if getattr(out, 'class_ids', None) else None,
+    )
+
     return {
         "status": "success",
         "video_name": source_path.name,
@@ -563,6 +646,18 @@ def process_video_inference(
             "infer_ms": round(infer_time_ms, 1),
             "total_ms": round(total_time_ms, 1)
         },
+        "detector_implementation": det_impl,
+        "detector_name": "YOLOv11 Semantic" if det_impl == "yolo" else "Heuristic Proposals",
+        "person_count": alert_event.person_count if alert_event else 0,
+        "vehicle_count": alert_event.vehicle_count if alert_event else 0,
+        "bag_count": alert_event.bag_count if alert_event else 0,
+        "weapon_count": alert_event.weapon_count if alert_event else 0,
+        "other_count": alert_event.other_count if alert_event else 0,
+        "object_counts": alert_event.object_counts if (alert_event and alert_event.object_counts) else {},
+        "person_weapon_edges": alert_event.person_weapon_edges if alert_event else 0,
+        "num_person_interactions": alert_event.num_person_interactions if alert_event else 0,
+        "evidence_summary": alert_event.summary if alert_event else "",
+        "evidence_details": alert_event.evidence_details if (alert_event and alert_event.evidence_details) else [],
         "num_entities": max((len(boxes) for boxes in out.boxes[0]), default=0) if out.boxes else 0,
         "frames": annotated_frames
     }

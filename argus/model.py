@@ -21,8 +21,17 @@ import torch.nn.functional as F
 from .config import ARGUSConfig
 from .sampling import AdaptiveSampler
 from .backbone import SpatialBackbone
-from .detector import SemanticDetector, RoIFeatureExtractor
-from .graph import DynamicSceneGraphBuilder, EdgeGAT
+from .detector import SemanticDetector, RoIFeatureExtractor, SEMANTIC_TYPE_OTHER
+from .graph import (
+    DynamicSceneGraphBuilder,
+    EdgeGAT,
+    KINEMATIC_NODE_DIM,
+    SEMANTIC_NODE_DIM,
+    LEGACY_SEMANTIC_NODE_DIM,
+    KINEMATIC_EDGE_DIM,
+    RELATIONAL_EDGE_DIM,
+    THREAT_RELATIONAL_EDGE_DIM,
+)
 from .modules import GraphVisualFusion, GraphGuidedPruner, TemporalMemory, TemporalEncoder
 
 
@@ -35,6 +44,12 @@ class ARGUSOutput:
     node_importance: Optional[List[List[torch.Tensor]]] = None
     valid_mask: Optional[torch.Tensor] = None
     sequence_lengths: Optional[torch.Tensor] = None
+    semantic_types: Optional[List[List[torch.Tensor]]] = None
+    detection_scores: Optional[List[List[torch.Tensor]]] = None
+    edge_indices: Optional[List[List[Tuple[torch.Tensor, torch.Tensor]]]] = None
+    edge_attrs: Optional[List[List[torch.Tensor]]] = None
+    class_ids: Optional[List[List[torch.Tensor]]] = None
+    detector_impl: Optional[str] = None
 
 
 class ARGUS(nn.Module):
@@ -75,22 +90,28 @@ class ARGUS(nn.Module):
                 model_name=self.cfg.detector_name,
                 allow_fallback=self.cfg.allow_component_fallbacks,
             )
-            in_node_dim = 10  # 6 kinematic + 3 semantic one-hot + 1 conf
-            edge_attr_dim = 7  # 4 kinematic + 3 relational (P2P, P2O, O2O)
+            if self.cfg.semantic_schema_version == "threat5":
+                in_node_dim = SEMANTIC_NODE_DIM  # 12: 6 kinematics + 5 semantic one-hot + 1 conf
+                edge_attr_dim = THREAT_RELATIONAL_EDGE_DIM  # 10: 4 kinematic + 3 broad + 3 threat-aware
+            else:
+                in_node_dim = LEGACY_SEMANTIC_NODE_DIM  # 10: 6 kinematics + 3 semantic one-hot + 1 conf
+                edge_attr_dim = RELATIONAL_EDGE_DIM  # 7: 4 kinematic + 3 broad
             self.graph_builder = DynamicSceneGraphBuilder(
                 max_objects=self.cfg.max_objects,
                 detector=self.detector,
                 use_semantic=True,
                 tracking_iou_threshold=self.cfg.tracking_iou_threshold,
+                semantic_schema_version=self.cfg.semantic_schema_version,
             )
         else:
             self.detector = None
-            in_node_dim = 6   # 6 kinematic (center, size, velocity)
-            edge_attr_dim = 4  # 4 kinematic (dist, iou, rel_vel, persist)
+            in_node_dim = KINEMATIC_NODE_DIM   # 6 kinematic (center, size, velocity)
+            edge_attr_dim = KINEMATIC_EDGE_DIM  # 4 kinematic (dist, iou, rel_vel, persist)
             self.graph_builder = DynamicSceneGraphBuilder(
                 max_objects=self.cfg.max_objects,
                 use_semantic=False,
                 tracking_iou_threshold=self.cfg.tracking_iou_threshold,
+                semantic_schema_version=self.cfg.semantic_schema_version,
             )
 
         # Optional RoI visual feature extractor for graph nodes
@@ -154,6 +175,7 @@ class ARGUS(nn.Module):
             "backbone_pretrained_requested": self.cfg.backbone_pretrained,
             "detector_implementation": detector_impl,
             "detector_model": self.detector.model_name if self.detector is not None else None,
+            "semantic_schema_version": self.cfg.semantic_schema_version,
         }
 
     def _encode_frame(self, frame: torch.Tensor, prev_boxes: Optional[torch.Tensor] = None):
@@ -202,7 +224,7 @@ class ARGUS(nn.Module):
 
         pruned, topk_scores, topk_idx = self.pruner(fused, graph_affinity=graph_affinity)
         frame_token = pruned.mean(dim=1)
-        return frame_token, boxes, topk_scores, g_embed
+        return frame_token, boxes, topk_scores, g_embed, det_result, edges, edge_attr
 
     def forward(
         self,
@@ -223,6 +245,11 @@ class ARGUS(nn.Module):
         batch_boxes = []
         batch_saliencies = []
         batch_node_imp = []
+        batch_sem_types = []
+        batch_det_scores = []
+        batch_class_ids = []
+        batch_edge_indices = []
+        batch_edge_attrs = []
 
         for i in range(b):
             chosen = selected_batches[i]
@@ -231,20 +258,48 @@ class ARGUS(nn.Module):
             clip_boxes = []
             clip_saliencies = []
             clip_node_imp = []
+            clip_sem_types = []
+            clip_det_scores = []
+            clip_class_ids = []
+            clip_edge_indices = []
+            clip_edge_attrs = []
 
             for frame_idx in chosen:
-                f_token, boxes, saliency, node_emb = self._encode_frame(frames[i, frame_idx], prev_boxes)
+                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(frames[i, frame_idx], prev_boxes)
                 prev_boxes = boxes.detach()
                 clip_tokens.append(f_token)
                 clip_boxes.append(boxes)
                 clip_saliencies.append(saliency)
                 clip_node_imp.append(node_emb)
 
+                if hasattr(det_res, 'semantic_types'):
+                    clip_sem_types.append(det_res.semantic_types)
+                else:
+                    clip_sem_types.append(torch.full((len(boxes),), SEMANTIC_TYPE_OTHER, dtype=torch.long, device=frames.device))
+
+                if hasattr(det_res, 'scores'):
+                    clip_det_scores.append(det_res.scores)
+                else:
+                    clip_det_scores.append(torch.ones(len(boxes), dtype=torch.float32, device=frames.device))
+
+                if hasattr(det_res, 'class_ids'):
+                    clip_class_ids.append(det_res.class_ids)
+                else:
+                    clip_class_ids.append(torch.full((len(boxes),), SEMANTIC_TYPE_OTHER, dtype=torch.long, device=frames.device))
+
+                clip_edge_indices.append(edges)
+                clip_edge_attrs.append(edge_attr)
+
             clip_tokens_t = torch.cat(clip_tokens, dim=0).unsqueeze(0)
             batch_tokens.append(clip_tokens_t)
             batch_boxes.append(clip_boxes)
             batch_saliencies.append(clip_saliencies)
             batch_node_imp.append(clip_node_imp)
+            batch_sem_types.append(clip_sem_types)
+            batch_det_scores.append(clip_det_scores)
+            batch_class_ids.append(clip_class_ids)
+            batch_edge_indices.append(clip_edge_indices)
+            batch_edge_attrs.append(clip_edge_attrs)
 
         max_t = max(bt.shape[1] for bt in batch_tokens)
         lengths = torch.tensor([bt.shape[1] for bt in batch_tokens], device=frames.device, dtype=torch.long)
@@ -284,4 +339,10 @@ class ARGUS(nn.Module):
             node_importance=batch_node_imp,
             valid_mask=valid_mask,
             sequence_lengths=lengths,
+            semantic_types=batch_sem_types,
+            detection_scores=batch_det_scores,
+            edge_indices=batch_edge_indices,
+            edge_attrs=batch_edge_attrs,
+            class_ids=batch_class_ids,
+            detector_impl=self.component_metadata()["detector_implementation"],
         )
