@@ -9,6 +9,7 @@ Implements Module 3 of the ARGUS research design:
 
 from __future__ import annotations
 from typing import Optional, Tuple
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -109,21 +110,44 @@ class SemanticDetector(nn.Module):
         self,
         confidence: float = 0.3,
         max_objects: int = 16,
-        model_name: str = "yolo11n.pt"
+        model_name: str = "yolo11n.pt",
+        allow_fallback: bool = True,
     ):
         super().__init__()
         self.confidence = confidence
         self.max_objects = max_objects
+        self.model_name = model_name
         self.yolo = None
         self._fallback = None
 
+        if model_name in {"heuristic", "grid"}:
+            from .graph import GridDetector
+            self._fallback = GridDetector(max_objects)
+            return
+
         try:
             from ultralytics import YOLO
-            self.yolo = YOLO(model_name)
+            # Ultralytics' high-level YOLO wrapper exposes ``train`` as a
+            # training entry point rather than ``nn.Module.train(mode)``.
+            # Registering it as a PyTorch child module therefore makes the
+            # parent ARGUS ``model.train()`` call crash. Keep the frozen
+            # inference wrapper as a plain attribute; its underlying weights
+            # are external pretrained detector state, not ARGUS parameters.
+            object.__setattr__(self, "yolo", YOLO(model_name))
             self.yolo.fuse()
             if hasattr(self.yolo, "model") and hasattr(self.yolo.model, "eval"):
                 self.yolo.model.eval()
-        except Exception:
+        except Exception as exc:
+            if not allow_fallback:
+                raise RuntimeError(
+                    "Unable to initialize the requested YOLO semantic detector. Install ultralytics "
+                    "and make its weights available, or explicitly enable component fallbacks."
+                ) from exc
+            warnings.warn(
+                f"YOLO semantic detection is unavailable; using heuristic proposals: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             from .graph import GridDetector
             self._fallback = GridDetector(max_objects)
 
@@ -145,7 +169,10 @@ class SemanticDetector(nn.Module):
         return self._fallback_detect(frame, h, w)
 
     def _yolo_detect(self, frame: torch.Tensor, h: int, w: int) -> DetectionResult:
-        img = (frame.unsqueeze(0) * 255).byte()
+        # Ultralytics accepts BCHW float tensors normalized to [0, 1]. Passing
+        # byte-like values in [0, 255] makes it renormalize every frame and
+        # emits a warning for every detector call.
+        img = frame.unsqueeze(0).float().clamp(0.0, 1.0)
         results = self.yolo(img, verbose=False, conf=self.confidence)
 
         if len(results) == 0 or len(results[0].boxes) == 0:
@@ -203,8 +230,8 @@ class SemanticDetector(nn.Module):
 
     def _empty(self, device: torch.device) -> DetectionResult:
         return DetectionResult(
-            boxes=torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=device),
-            scores=torch.ones(1, device=device),
-            class_ids=torch.zeros(1, device=device, dtype=torch.long),
-            semantic_types=torch.full((1,), 2, device=device, dtype=torch.long),
+            boxes=torch.empty((0, 4), device=device),
+            scores=torch.empty((0,), device=device),
+            class_ids=torch.empty((0,), device=device, dtype=torch.long),
+            semantic_types=torch.empty((0,), device=device, dtype=torch.long),
         )

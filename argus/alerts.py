@@ -16,6 +16,7 @@ Features:
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from enum import Enum
+import html
 import json
 from pathlib import Path
 import time
@@ -43,6 +44,8 @@ class AlertEvent:
     num_person_interactions: int
     is_anomaly: bool
     summary: str
+    decision_threshold: float = 0.5
+    notification_sent: bool = False
 
     def to_dict(self) -> Dict:
         d = asdict(self)
@@ -60,13 +63,20 @@ class AlertDispatcher:
         threshold: float = 0.5,
         cooldown_seconds: float = 5.0,
         log_file: Optional[Path] = None,
-        callbacks: Optional[List[Callable[[AlertEvent], None]]] = None
+        callbacks: Optional[List[Callable[[AlertEvent], None]]] = None,
+        hysteresis_margin: float = 0.05,
     ):
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("threshold must be in [0, 1]")
+        if cooldown_seconds < 0 or hysteresis_margin < 0:
+            raise ValueError("cooldown_seconds and hysteresis_margin cannot be negative")
         self.threshold = threshold
         self.cooldown_seconds = cooldown_seconds
         self.log_file = Path(log_file) if log_file else None
         self.callbacks = callbacks or []
-        self._last_alert_time: float = 0.0
+        self.hysteresis_margin = max(0.0, hysteresis_margin)
+        self._last_alert_time: Dict[str, float] = {}
+        self._active_sources: set[str] = set()
 
         if self.log_file:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -98,12 +108,21 @@ class AlertDispatcher:
 
         peak_score = float(max(timeline_scores))
         mean_score = float(sum(timeline_scores) / len(timeline_scores))
-        is_anomaly = peak_score >= self.threshold
+        source_key = str(video_source)
+        was_active = source_key in self._active_sources
+        recovery_threshold = max(0.0, self.threshold - self.hysteresis_margin)
+        is_anomaly = peak_score >= (recovery_threshold if was_active else self.threshold)
+        if is_anomaly:
+            self._active_sources.add(source_key)
+        else:
+            self._active_sources.discard(source_key)
         severity = self.compute_severity(peak_score)
+        if is_anomaly and severity == AlertSeverity.NORMAL:
+            severity = AlertSeverity.LOW
         now = time.time()
 
-        total_boxes = sum(len(b) for b in boxes_per_frame) if boxes_per_frame else 0
-        person_count = total_boxes // 2  # heuristic approximation
+        total_boxes = max((len(b) for b in boxes_per_frame), default=0) if boxes_per_frame else 0
+        person_count = 0  # Semantic person identities are not supplied to this API.
 
         event = AlertEvent(
             timestamp=now,
@@ -116,16 +135,21 @@ class AlertDispatcher:
             num_detected_objects=total_boxes,
             num_person_interactions=person_count,
             is_anomaly=is_anomaly,
-            summary=f"[{severity.value}] Anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
+            summary=(
+                f"[{severity.value}] Anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
+                if is_anomaly else
+                f"[NORMAL] No anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
+            ),
+            decision_threshold=self.threshold,
         )
 
         # Dispatch if anomalous and cooldown satisfied
         if is_anomaly:
-            if (now - self._last_alert_time) >= self.cooldown_seconds:
-                self._last_alert_time = now
+            last_alert = self._last_alert_time.get(source_key, 0.0)
+            if (now - last_alert) >= self.cooldown_seconds:
+                self._last_alert_time[source_key] = now
+                event.notification_sent = True
                 self._notify(event)
-        else:
-            self._notify(event)
 
         return event
 
@@ -160,6 +184,7 @@ def generate_dashboard_html(
 
     labels_json = json.dumps([f"KF {kf}" for kf in event.keyframe_indices])
     scores_json = json.dumps(event.timeline_scores)
+    safe_video_source = html.escape(event.video_source, quote=True)
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -167,10 +192,6 @@ def generate_dashboard_html(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ARGUS Surveillance Incident Report</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {{
             --bg-base: #080b11;
@@ -301,7 +322,7 @@ def generate_dashboard_html(
         <div class="chart-container">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
                 <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary)">Causal Anomaly Probability Curve</span>
-                <span style="font-size:11px;color:var(--text-tertiary);font-family:'JetBrains Mono',monospace">Decision Threshold: 0.50</span>
+                <span style="font-size:11px;color:var(--text-tertiary);font-family:'JetBrains Mono',monospace">Decision Threshold: {event.decision_threshold:.2f}</span>
             </div>
             <canvas id="timelineChart" height="80"></canvas>
         </div>
@@ -309,7 +330,7 @@ def generate_dashboard_html(
         <div class="card">
             <div class="card-label">Stream Telemetry & Metadata</div>
             <div class="meta-list">
-                <div><strong>Source Stream:</strong> {event.video_source}</div>
+                <div><strong>Source Stream:</strong> {safe_video_source}</div>
                 <div><strong>Detected Entities:</strong> {event.num_detected_objects} bounding boxes</div>
                 <div><strong>Inference Latency:</strong> {latency_ms:.1f} ms / clip</div>
                 <div><strong>Classification Verdict:</strong> <span style="color: {status_color}; font-weight: 600;">{status_text}</span></div>
@@ -318,53 +339,27 @@ def generate_dashboard_html(
     </div>
 
     <script>
-        const ctx = document.getElementById('timelineChart').getContext('2d');
-        new Chart(ctx, {{
-            type: 'line',
-            data: {{
-                labels: {labels_json},
-                datasets: [
-                    {{
-                        label: 'Anomaly Score',
-                        data: {scores_json},
-                        borderColor: '{status_color}',
-                        backgroundColor: '{status_bg}',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.25,
-                        pointRadius: 3,
-                        pointHoverRadius: 6
-                    }},
-                    {{
-                        label: 'Decision Threshold (0.50)',
-                        data: Array({len(event.timeline_scores)}).fill(0.5),
-                        borderColor: '#f59e0b',
-                        borderDash: [4, 4],
-                        borderWidth: 1.5,
-                        pointRadius: 0,
-                        fill: false
-                    }}
-                ]
-            }},
-            options: {{
-                responsive: true,
-                scales: {{
-                    y: {{
-                        min: 0,
-                        max: 1.0,
-                        grid: {{ color: 'rgba(255, 255, 255, 0.04)' }},
-                        ticks: {{ color: '#64748b', font: {{ family: "'JetBrains Mono', monospace", size: 9 }} }}
-                    }},
-                    x: {{
-                        grid: {{ color: 'rgba(255, 255, 255, 0.04)' }},
-                        ticks: {{ color: '#64748b', font: {{ family: "'JetBrains Mono', monospace", size: 9 }} }}
-                    }}
-                }},
-                plugins: {{
-                    legend: {{ labels: {{ color: '#94a3b8', font: {{ family: "'Inter', sans-serif", size: 10 }} }} }}
-                }}
-            }}
-        }});
+        const canvas = document.getElementById('timelineChart');
+        const ctx = canvas.getContext('2d');
+        const scores = {scores_json};
+        const threshold = {event.decision_threshold:.8f};
+        function drawTimeline() {{
+            const ratio = window.devicePixelRatio || 1;
+            const width = canvas.clientWidth || 900;
+            const height = 240;
+            canvas.width = width * ratio; canvas.height = height * ratio;
+            ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
+            const pad = 24, plotW = width - 2 * pad, plotH = height - 2 * pad;
+            ctx.strokeStyle = '#f59e0b'; ctx.setLineDash([5, 5]); ctx.beginPath();
+            const ty = pad + (1 - threshold) * plotH; ctx.moveTo(pad, ty); ctx.lineTo(width-pad, ty); ctx.stroke();
+            ctx.setLineDash([]); ctx.strokeStyle = '{status_color}'; ctx.lineWidth = 2; ctx.beginPath();
+            scores.forEach((score, index) => {{
+                const x = pad + (scores.length <= 1 ? 0 : index / (scores.length - 1)) * plotW;
+                const y = pad + (1 - Math.max(0, Math.min(1, score))) * plotH;
+                if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }}); ctx.stroke();
+        }}
+        drawTimeline(); window.addEventListener('resize', drawTimeline);
     </script>
 </body>
 </html>

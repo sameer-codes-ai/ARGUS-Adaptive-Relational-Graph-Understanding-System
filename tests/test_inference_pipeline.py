@@ -1,10 +1,14 @@
 import sys
 from pathlib import Path
+import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import web_demo
 
 def test_inference_pipeline():
-    web_demo.load_model(Path('outputs/checkpoints_joint/best.pt'))
+    checkpoint = Path('outputs/checkpoints_joint/best.pt')
+    if not checkpoint.exists():
+        pytest.skip("trained benchmark checkpoint is not included in the repository")
+    web_demo.load_model(checkpoint)
 
     # Test A: Street Violence
     res1 = web_demo.process_video_inference(Path('demo_samples/sample_violence_V691.mp4'), threshold=0.35, frames=24)

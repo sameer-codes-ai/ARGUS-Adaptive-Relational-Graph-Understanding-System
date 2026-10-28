@@ -1,0 +1,31 @@
+data:
+  train_manifest: "data/train_violence.csv"
+  val_manifest: "data/val_violence.csv"
+  test_manifest: "data/test_violence.csv"
+  frames: 16
+  image_size: 128
+
+model:
+  image_size: 128
+  patch_size: 16
+  dim: 256
+  graph_dim: 128
+  max_objects: 16
+  temporal_layers: 4
+  heads: 4
+  keep_ratio: 0.5
+  memory_size: 16
+  sampling_threshold: 0.12
+  max_frame_gap: 4
+
+training:
+  batch_size: 4
+  epochs: 15
+  lr: 0.0001
+  weight_decay: 0.0001
+  smoothness_weight: 0.1
+  sparsity_weight: 0.01
+  mil_weight: 0.5
+  workers: 0
+  seed: 42
+  output_dir: "outputs/checkpoints_rlvd"
