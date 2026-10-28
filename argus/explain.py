@@ -119,14 +119,33 @@ class ExplainabilityEngine:
             else list(out.sampled_indices[0])
         )
 
+        def _to_numpy_list(item_seq):
+            if item_seq is None:
+                return []
+            if isinstance(item_seq, (list, tuple)):
+                return [
+                    x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
+                    for x in item_seq
+                ]
+            if isinstance(item_seq, torch.Tensor):
+                return [x.detach().cpu().numpy() for x in item_seq]
+            return []
+
         boxes_list = []
         if out.boxes and len(out.boxes) > 0:
-            clip_boxes = out.boxes[0]
-            if isinstance(clip_boxes, list):
-                boxes_list = [
-                    b.detach().cpu().numpy() if isinstance(b, torch.Tensor) else np.asarray(b)
-                    for b in clip_boxes
-                ]
+            boxes_list = _to_numpy_list(out.boxes[0])
+
+        sem_list = []
+        if getattr(out, "semantic_types", None) and len(out.semantic_types) > 0:
+            sem_list = _to_numpy_list(out.semantic_types[0])
+
+        scores_list = []
+        if getattr(out, "detection_scores", None) and len(out.detection_scores) > 0:
+            scores_list = _to_numpy_list(out.detection_scores[0])
+
+        class_ids_list = []
+        if getattr(out, "class_ids", None) and len(out.class_ids) > 0:
+            class_ids_list = _to_numpy_list(out.class_ids[0])
 
         return {
             "scores": scores.detach().cpu().numpy(),
@@ -136,6 +155,10 @@ class ExplainabilityEngine:
             },
             "sampled_indices": sampled,
             "boxes": boxes_list,
+            "semantic_types": sem_list,
+            "detection_scores": scores_list,
+            "class_ids": class_ids_list,
+            "detector_implementation": getattr(out, "detector_impl", "yolo"),
         }
 
     # ── Temporal attention ────────────────────────────────────────────

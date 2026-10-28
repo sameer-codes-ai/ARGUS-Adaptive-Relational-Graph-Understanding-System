@@ -132,6 +132,20 @@ def main():
         print(f"    Frame {kf:03d} -> Score: {sc:.4f} [{bar:<25}]")
     print("=" * 58)
 
+    dispatcher = AlertDispatcher(threshold=args.threshold)
+    event = dispatcher.dispatch(
+        video_source=str(input_path),
+        timeline_scores=scores_seq,
+        keyframe_indices=sampled_indices,
+        boxes_per_frame=out.boxes[0] if out.boxes else None,
+        semantic_types_per_frame=out.semantic_types[0] if getattr(out, 'semantic_types', None) else None,
+        detection_scores_per_frame=out.detection_scores[0] if getattr(out, 'detection_scores', None) else None,
+        edge_indices_per_frame=out.edge_indices[0] if getattr(out, 'edge_indices', None) else None,
+        edge_attrs_per_frame=out.edge_attrs[0] if getattr(out, 'edge_attrs', None) else None,
+        detector_impl=getattr(out, 'detector_impl', 'yolo'),
+        class_ids_per_frame=out.class_ids[0] if getattr(out, 'class_ids', None) else None,
+    )
+
     result = {
         'input_path': str(input_path.resolve()),
         'is_anomaly': is_anomaly,
@@ -139,20 +153,22 @@ def main():
         'mean_anomaly_score': mean_score,
         'timeline_scores': scores_seq,
         'sampled_keyframes': sampled_indices,
+        'detector_implementation': getattr(out, 'detector_impl', 'yolo'),
+        'person_count': event.person_count if event else 0,
+        'vehicle_count': event.vehicle_count if event else 0,
+        'bag_count': event.bag_count if event else 0,
+        'weapon_count': event.weapon_count if event else 0,
+        'other_count': event.other_count if event else 0,
+        'object_counts': event.object_counts if event else {},
+        'person_weapon_edges': event.person_weapon_edges if event else 0,
+        'num_person_interactions': event.num_person_interactions if event else 0,
+        'summary': event.summary if event else '',
         'timings': {
             'decode_s': decode_time,
             'inference_s': infer_time,
             'total_s': total_pipeline_time,
         }
     }
-
-    dispatcher = AlertDispatcher(threshold=args.threshold)
-    event = dispatcher.dispatch(
-        video_source=str(input_path),
-        timeline_scores=scores_seq,
-        keyframe_indices=sampled_indices,
-        boxes_per_frame=out.boxes[0] if out.boxes else None
-    )
 
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
