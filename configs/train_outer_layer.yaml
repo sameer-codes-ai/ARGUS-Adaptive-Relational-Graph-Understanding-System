@@ -21,8 +21,13 @@ model:
   backbone_name: "convnext_tiny"
   backbone_frozen: true
   use_semantic_detector: true
+  detector_name: "yolo11n.pt"
   detector_confidence: 0.3
+  semantic_schema_version: "threat5"
   node_visual_dim: 64
+  allow_component_fallbacks: false
+  backbone_pretrained: true
+  tracking_iou_threshold: 0.1
 
 training:
   batch_size: 4

@@ -12,6 +12,15 @@ def binary_metrics(preds, targets, threshold=0.5):
     else:
         y = np.asarray(targets).flatten()
 
+    if len(p) != len(y) or len(p) == 0:
+        raise ValueError("predictions and targets must be non-empty and have equal length")
+    if not np.isfinite(p).all() or not np.isfinite(y).all():
+        raise ValueError("predictions and targets must contain only finite values")
+    if not np.isin(y, [0, 1]).all():
+        raise ValueError("targets must be binary values 0 or 1")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be in [0, 1]")
+
     p_bin = (p >= threshold).astype(np.int64)
     y_int = y.astype(np.int64)
 
@@ -32,18 +41,24 @@ def binary_metrics(preds, targets, threshold=0.5):
     n_neg = int(len(y_int) - n_pos)
 
     if n_pos == 0 or n_neg == 0:
-        auc_roc = 0.5
-        ap = float(n_pos > 0)
+        auc_roc = float('nan')
+        ap = float('nan')
     else:
-        tp_cumsum = np.cumsum(y_sorted)
-        fp_cumsum = np.cumsum(1 - y_sorted)
-        tpr = tp_cumsum / n_pos
-        fpr = fp_cumsum / n_neg
+        # Advance the ROC/PR curve once per distinct score so tied predictions
+        # cannot change the metric when input rows are reordered.
+        sorted_scores = p[sorted_indices]
+        distinct_ends = np.r_[np.flatnonzero(np.diff(sorted_scores)) + 1, len(sorted_scores)]
+        tp_cumsum = np.cumsum(y_sorted)[distinct_ends - 1]
+        fp_cumsum = np.cumsum(1 - y_sorted)[distinct_ends - 1]
+        tpr = np.r_[0.0, tp_cumsum / n_pos]
+        fpr = np.r_[0.0, fp_cumsum / n_neg]
         trapz_fn = getattr(np, 'trapezoid', getattr(np, 'trapz', None))
-        auc_roc = float(trapz_fn(tpr, fpr)) if trapz_fn else 0.5
+        auc_roc = float(trapz_fn(tpr, fpr))
 
         precisions = tp_cumsum / np.maximum(tp_cumsum + fp_cumsum, 1)
-        ap = float(np.sum(precisions * y_sorted) / n_pos)
+        recalls = tp_cumsum / n_pos
+        recall_steps = np.diff(np.r_[0.0, recalls])
+        ap = float(np.sum(precisions * recall_steps))
 
 
     return {

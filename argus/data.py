@@ -1,6 +1,7 @@
 from __future__ import annotations
 import csv
 from pathlib import Path
+import random
 import re
 from typing import List, Tuple, Union
 
@@ -28,33 +29,66 @@ def find_frame_files(dir_path: Path) -> list[Path]:
     return frame_files
 
 
+_DIR_FRAME_CACHE: dict[Path, dict[str, list[Path]]] = {}
+
+
 def load_clip_from_path(
     path: str | Path,
     target_frames: int = 16,
     image_size: int = 96
 ) -> torch.Tensor:
     path = Path(path)
+    if target_frames <= 0 or image_size <= 0:
+        raise ValueError("target_frames and image_size must be positive")
+
+    prefix_files: list[Path] | None = None
     if not path.exists():
-        raise FileNotFoundError(f"Media path not found: {path}")
+        parent = path.parent
+        if parent.is_dir():
+            if parent not in _DIR_FRAME_CACHE:
+                index: dict[str, list[Path]] = {}
+                for f in parent.iterdir():
+                    if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+                        pfx = f.stem.rsplit('_', 1)[0]
+                        index.setdefault(pfx, []).append(f)
+                for pfx in index:
+                    index[pfx].sort(key=natural_sort_key)
+                _DIR_FRAME_CACHE[parent] = index
+            candidate_pfx = path.stem if path.suffix else path.name
+            if candidate_pfx in _DIR_FRAME_CACHE[parent]:
+                prefix_files = _DIR_FRAME_CACHE[parent][candidate_pfx]
+        if prefix_files is None:
+            raise FileNotFoundError(f"Media path not found: {path}")
 
     if path.is_file() and path.suffix.lower() == '.pt':
-        clip = torch.load(path, weights_only=False)
+        clip = torch.load(path, map_location='cpu', weights_only=True)
         if isinstance(clip, dict):
-            clip = clip.get('frames', clip.get('clip', list(clip.values())[0]))
+            if not clip:
+                raise ValueError(f"Tensor file contains an empty mapping: {path}")
+            clip = clip.get('frames', clip.get('clip', next(iter(clip.values()))))
         if not isinstance(clip, torch.Tensor):
             clip = torch.tensor(clip)
         if clip.ndim == 4 and clip.shape[1] in (1, 3):
-            pass
+            if clip.shape[1] == 1:
+                clip = clip.repeat(1, 3, 1, 1)
         elif clip.ndim == 4 and clip.shape[-1] in (1, 3):
             clip = clip.permute(0, 3, 1, 2)
+            if clip.shape[1] == 1:
+                clip = clip.repeat(1, 3, 1, 1)
         else:
             raise ValueError(f"Unexpected tensor shape: {clip.shape}")
         clip = clip.float()
+        if clip.numel() == 0 or not torch.isfinite(clip).all():
+            raise ValueError(f"Tensor clip is empty or contains NaN/Inf values: {path}")
+        if clip.min() < 0:
+            raise ValueError(f"Tensor clip contains negative pixel values: {path}")
+        if clip.max() > 255.0:
+            raise ValueError(f"Tensor clip contains pixel values above 255: {path}")
         if clip.max() > 1.0:
             clip = clip / 255.0
 
-    elif path.is_dir():
-        frame_files = find_frame_files(path)
+    elif path.is_dir() or prefix_files is not None:
+        frame_files = prefix_files if prefix_files is not None else find_frame_files(path)
         if not frame_files:
             raise ValueError(f"No image frames found in directory: {path}")
 
@@ -81,7 +115,7 @@ def load_clip_from_path(
 
         clip = torch.stack(raw_frames).float() / 255.0
 
-    elif path.is_file():
+    elif path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
         cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
             raise ValueError(f"Failed to open video file: {path}")
@@ -93,6 +127,7 @@ def load_clip_from_path(
             target_indices = None
 
         raw = []
+        reservoir_rng = random.Random(0)
         frame_idx = 0
         while True:
             ok, frame = cap.read()
@@ -103,7 +138,19 @@ def load_clip_from_path(
                     interp = cv2.INTER_AREA if frame.shape[0] > image_size else cv2.INTER_LINEAR
                     frame = cv2.resize(frame, (image_size, image_size), interpolation=interp)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                raw.append(torch.from_numpy(rgb).permute(2, 0, 1))
+                tensor_frame = torch.from_numpy(rgb).permute(2, 0, 1)
+                if target_indices is None:
+                    # Reservoir sampling keeps memory bounded when containers do not
+                    # report a trustworthy frame count.
+                    seen = frame_idx + 1
+                    if len(raw) < target_frames:
+                        raw.append(tensor_frame)
+                    else:
+                        replacement = reservoir_rng.randrange(seen)
+                        if replacement < target_frames:
+                            raw[replacement] = tensor_frame
+                else:
+                    raw.append(tensor_frame)
             frame_idx += 1
             if target_indices and len(raw) >= target_frames:
                 break
@@ -114,7 +161,7 @@ def load_clip_from_path(
         clip = torch.stack(raw).float() / 255.0
 
     else:
-        raise ValueError(f"Unsupported path type: {path}")
+        raise ValueError(f"Unsupported media path or extension: {path}")
 
     if clip.shape[0] < target_frames:
         repeat_count = target_frames - clip.shape[0]
@@ -172,16 +219,31 @@ class VideoManifest(Dataset):
 
         with open(self.manifest_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            for row in reader:
+            required_aliases = {'path', 'filepath', 'video_path'}
+            if not reader.fieldnames or not required_aliases.intersection(reader.fieldnames):
+                raise ValueError("Manifest must contain one of: path, filepath, video_path")
+            for row_number, row in enumerate(reader, start=2):
                 p = row.get('path') or row.get('filepath') or row.get('video_path')
                 lbl = row.get('label') or row.get('target') or row.get('anomaly', 0)
                 if p:
+                    media_path = Path(p)
+                    if not media_path.is_absolute():
+                        media_path = (self.manifest_path.parent / media_path).resolve()
+                    try:
+                        label_value = float(lbl)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(f"Invalid label on manifest row {row_number}: {lbl!r}") from exc
+                    if label_value not in (0.0, 1.0):
+                        raise ValueError(f"Label on manifest row {row_number} must be 0 or 1")
                     self.records.append({
-                        'path': p,
-                        'label': float(lbl),
+                        'path': str(media_path),
+                        'label': label_value,
                         'dataset': row.get('dataset', 'unknown'),
                         'category': row.get('category', 'unknown'),
                     })
+
+        if not self.records:
+            raise ValueError(f"Manifest contains no usable records: {self.manifest_path}")
 
     def __len__(self) -> int:
         return len(self.records)

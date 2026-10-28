@@ -34,7 +34,7 @@ def test_end_to_end_forward_and_loss():
     assert len(out.sampled_indices) == 2
     assert len(out.boxes) == 2
 
-    loss, loss_dict = anomaly_loss(out.scores, torch.tensor([0., 1.]))
+    loss, loss_dict = anomaly_loss(out.scores, torch.tensor([0., 1.]), valid_mask=out.valid_mask)
     assert torch.isfinite(loss)
     assert 'bce' in loss_dict and 'smooth' in loss_dict
 
@@ -86,7 +86,7 @@ def test_config_serialization():
 # ── Outer Layer Unit Tests ───────────────────────────────────────────────
 
 def test_spatial_backbone():
-    backbone = SpatialBackbone(out_dim=128, frozen=True)
+    backbone = SpatialBackbone(name="native", out_dim=128, frozen=False, pretrained=False)
     dummy = torch.randn(2, 3, 64, 64)
     tokens, feat_maps = backbone(dummy)
     assert tokens.ndim == 3 and tokens.shape[0] == 2
@@ -95,7 +95,7 @@ def test_spatial_backbone():
 
 
 def test_semantic_detector_and_roi():
-    detector = SemanticDetector(max_objects=8)
+    detector = SemanticDetector(max_objects=8, model_name="heuristic")
     frame = torch.rand(3, 96, 96)
     res = detector(frame)
     assert res.boxes.ndim == 2 and res.boxes.shape[1] == 4
@@ -108,13 +108,14 @@ def test_semantic_detector_and_roi():
 
 
 def test_semantic_scene_graph_relations():
-    builder = DynamicSceneGraphBuilder(max_objects=6, use_semantic=True)
+    detector = SemanticDetector(max_objects=6, model_name="heuristic")
+    builder = DynamicSceneGraphBuilder(max_objects=6, detector=detector, use_semantic=True)
     frame = torch.rand(3, 64, 64)
     node_feats, (src, dst), edge_attr, boxes = builder.build(frame)
-    # Semantic node features have at least 10 dims
-    assert node_feats.shape[-1] >= 10
-    # Semantic edge features have 7 dims (4 kinematic + 3 relational: P2P, P2O, O2O)
-    assert edge_attr.shape[-1] == 7
+    # Semantic node features have 12 dims (6 kinematic + 5 semantic one-hot + 1 conf)
+    assert node_feats.shape[-1] >= 12
+    # Semantic edge features have 10 dims (4 kinematic + 3 broad relational + 3 threat-aware: P2W, P2B, W2O)
+    assert edge_attr.shape[-1] == 10
 
 
 def test_dynamic_attention_modulation():
@@ -132,10 +133,14 @@ def test_outer_layer_end_to_end_forward():
         dim=128,
         graph_dim=64,
         use_pretrained_backbone=True,
+        backbone_name="native",
         use_semantic_detector=True,
+        detector_name="heuristic",
         node_visual_dim=32,
         temporal_layers=2,
-        heads=4
+        heads=4,
+        allow_component_fallbacks=False,
+        backbone_pretrained=False,
     )
     model = ARGUS(config=cfg)
     clip = torch.rand(1, 6, 3, 64, 64)

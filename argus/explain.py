@@ -39,10 +39,23 @@ class ExplainabilityEngine:
         self._clear_hooks()
         encoder = self.model.temporal_encoder.encoder
         for idx, layer in enumerate(encoder.layers):
+            pre_hook = layer.self_attn.register_forward_pre_hook(
+                self._make_pre_hook(), with_kwargs=True
+            )
             hook = layer.self_attn.register_forward_hook(
                 self._make_hook(f"temporal_layer_{idx}")
             )
+            self._hooks.append(pre_hook)
             self._hooks.append(hook)
+
+    @staticmethod
+    def _make_pre_hook():
+        def _pre_hook(_module, args, kwargs):
+            kwargs = dict(kwargs)
+            kwargs["need_weights"] = True
+            kwargs["average_attn_weights"] = False
+            return args, kwargs
+        return _pre_hook
 
     def _make_hook(self, name: str):
         def _hook(_module, _input, output):
@@ -76,39 +89,29 @@ class ExplainabilityEngine:
             dict with ``scores``, ``node_importances``, ``attention_maps``,
             ``sampled_indices``, ``boxes``.
         """
+        was_training = self.model.training
         self.model.eval()
-        self.model.zero_grad()
+        try:
+            out = self.model(frames)
+            valid_length = int(out.sequence_lengths[0].item()) if out.sequence_lengths is not None else out.scores.shape[1]
+            scores = out.scores[0, :valid_length]
+            if target_frame_idx == -1:
+                target = scores.max()
+            else:
+                if not -valid_length <= target_frame_idx < valid_length:
+                    raise IndexError("target_frame_idx is outside the valid predicted sequence")
+                target = scores[target_frame_idx]
 
-        out = self.model(frames)
-
-        # Retain gradients on non-leaf node embeddings for gradient-based attribution
-        if out.node_importance:
-            for clip_embs in out.node_importance:
-                if isinstance(clip_embs, list):
-                    for emb in clip_embs:
-                        if isinstance(emb, torch.Tensor) and emb.requires_grad:
-                            emb.retain_grad()
-                elif isinstance(clip_embs, torch.Tensor) and clip_embs.requires_grad:
-                    clip_embs.retain_grad()
-
-        scores = out.scores[0]
-        if target_frame_idx == -1:
-            target = scores.max()
-        else:
-            target = scores[target_frame_idx]
-        target.backward(retain_graph=False)
-
-        node_importances: List[Optional[torch.Tensor]] = []
-        if out.node_importance and len(out.node_importance) > 0:
-            clip_node_imp = out.node_importance[0]
-            if isinstance(clip_node_imp, list):
-                for emb in clip_node_imp:
-                    if isinstance(emb, torch.Tensor) and emb.grad is not None:
-                        node_importances.append(emb.grad.norm(dim=-1).detach().cpu())
-                    else:
-                        node_importances.append(None)
-            elif isinstance(clip_node_imp, torch.Tensor) and clip_node_imp.grad is not None:
-                node_importances.append(clip_node_imp.grad.norm(dim=-1).detach().cpu())
+            clip_node_imp = out.node_importance[0] if out.node_importance else []
+            tensors = [emb for emb in clip_node_imp if isinstance(emb, torch.Tensor) and emb.requires_grad]
+            gradients = torch.autograd.grad(target, tensors, allow_unused=True) if tensors else []
+            gradient_by_id = {id(tensor): grad for tensor, grad in zip(tensors, gradients)}
+            node_importances: List[Optional[torch.Tensor]] = []
+            for emb in clip_node_imp:
+                grad = gradient_by_id.get(id(emb)) if isinstance(emb, torch.Tensor) else None
+                node_importances.append(grad.norm(dim=-1).detach().cpu() if grad is not None else None)
+        finally:
+            self.model.train(was_training)
 
         sampled = (
             out.sampled_indices[0].cpu().tolist()
@@ -116,14 +119,33 @@ class ExplainabilityEngine:
             else list(out.sampled_indices[0])
         )
 
+        def _to_numpy_list(item_seq):
+            if item_seq is None:
+                return []
+            if isinstance(item_seq, (list, tuple)):
+                return [
+                    x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
+                    for x in item_seq
+                ]
+            if isinstance(item_seq, torch.Tensor):
+                return [x.detach().cpu().numpy() for x in item_seq]
+            return []
+
         boxes_list = []
         if out.boxes and len(out.boxes) > 0:
-            clip_boxes = out.boxes[0]
-            if isinstance(clip_boxes, list):
-                boxes_list = [
-                    b.detach().cpu().numpy() if isinstance(b, torch.Tensor) else np.asarray(b)
-                    for b in clip_boxes
-                ]
+            boxes_list = _to_numpy_list(out.boxes[0])
+
+        sem_list = []
+        if getattr(out, "semantic_types", None) and len(out.semantic_types) > 0:
+            sem_list = _to_numpy_list(out.semantic_types[0])
+
+        scores_list = []
+        if getattr(out, "detection_scores", None) and len(out.detection_scores) > 0:
+            scores_list = _to_numpy_list(out.detection_scores[0])
+
+        class_ids_list = []
+        if getattr(out, "class_ids", None) and len(out.class_ids) > 0:
+            class_ids_list = _to_numpy_list(out.class_ids[0])
 
         return {
             "scores": scores.detach().cpu().numpy(),
@@ -133,6 +155,10 @@ class ExplainabilityEngine:
             },
             "sampled_indices": sampled,
             "boxes": boxes_list,
+            "semantic_types": sem_list,
+            "detection_scores": scores_list,
+            "class_ids": class_ids_list,
+            "detector_implementation": getattr(out, "detector_impl", "yolo"),
         }
 
     # ── Temporal attention ────────────────────────────────────────────

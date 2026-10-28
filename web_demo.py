@@ -25,6 +25,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from typing import Dict, List, Optional, Tuple
 import urllib.parse
 from http import HTTPStatus
@@ -37,6 +38,7 @@ import torch
 from argus import ARGUS, AlertDispatcher, generate_dashboard_html
 from argus.config import ARGUSConfig
 from argus.data import load_clip_from_path, find_frame_files
+from argus.checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
 
 CLIENT_DISCONNECT_ERRORS = (
     ConnectionResetError,
@@ -48,7 +50,13 @@ CLIENT_DISCONNECT_ERRORS = (
 # Global Model & State
 GLOBAL_MODEL: Optional[ARGUS] = None
 GLOBAL_CONFIG: Optional[ARGUSConfig] = None
+MODEL_IS_TRAINED = False
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+MODEL_LOCK = threading.RLock()
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_ANALYSIS_FRAMES = 256
+UPLOAD_RETENTION_SECONDS = 60 * 60
+ALLOWED_UPLOAD_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
 
 # In-memory cache for presets to achieve sub-millisecond instant switching
 PRESET_CACHE: Dict[str, dict] = {}
@@ -117,24 +125,28 @@ PRESET_DATASETS = [
 ]
 
 
-def load_model(checkpoint_path: Path):
-    global GLOBAL_MODEL, GLOBAL_CONFIG
+def load_model(checkpoint_path: Path, *, allow_random_model: bool = False, allow_unsafe_checkpoint: bool = False):
+    global GLOBAL_MODEL, GLOBAL_CONFIG, MODEL_IS_TRAINED
     print(f"[*] Initializing ARGUS neural engine on {DEVICE.upper()} from {checkpoint_path}...")
     if not checkpoint_path.exists():
-        print(f"[!] Warning: Checkpoint {checkpoint_path} not found. Running with initialized weights.")
+        if not allow_random_model:
+            raise FileNotFoundError(
+                f"Checkpoint not found: {checkpoint_path}. Use --allow-random-model only for explicit development tests."
+            )
+        print(f"[!] DEVELOPMENT MODE: {checkpoint_path} not found; using untrained random weights.")
         GLOBAL_CONFIG = ARGUSConfig()
         GLOBAL_MODEL = ARGUS(config=GLOBAL_CONFIG).to(DEVICE)
+        MODEL_IS_TRAINED = False
     else:
-        with open(checkpoint_path, 'rb') as f:
-            bytes_io = io.BytesIO(f.read())
-        state = torch.load(bytes_io, map_location=DEVICE, weights_only=False)
+        state = load_checkpoint(checkpoint_path, map_location=DEVICE, allow_unsafe=allow_unsafe_checkpoint)
         saved_cfg = state.get('config', {})
-        GLOBAL_CONFIG = ARGUSConfig.from_dict(saved_cfg) if saved_cfg else ARGUSConfig()
+        GLOBAL_CONFIG = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
         GLOBAL_MODEL = ARGUS(config=GLOBAL_CONFIG).to(DEVICE)
-        state_dict = state['model'] if isinstance(state, dict) and 'model' in state else state
-        GLOBAL_MODEL.load_state_dict(state_dict)
+        validate_component_metadata(state, GLOBAL_MODEL)
+        GLOBAL_MODEL.load_state_dict(model_state_dict(state))
         epoch = state.get('epoch', '?') if isinstance(state, dict) else '?'
         print(f"[OK] Model weights loaded successfully (Trained Epoch {epoch})")
+        MODEL_IS_TRAINED = True
 
     GLOBAL_MODEL.eval()
 
@@ -176,7 +188,10 @@ def annotate_frame(
     threshold: float,
     frame_idx: int,
     total_frames: int,
-    orig_idx: int
+    orig_idx: int,
+    semantic_types: Optional[torch.Tensor] = None,
+    scores: Optional[torch.Tensor] = None,
+    detector_impl: str = "yolo",
 ) -> np.ndarray:
     """
     Renders clean, high-definition surveillance OSD, actor bounding brackets, and relational scene graph edges.
@@ -212,7 +227,7 @@ def annotate_frame(
             cy = (y1 + y2) // 2
             box_coords.append((x1, y1, x2, y2, cx, cy))
 
-        # Draw Relational Scene Graph Edges (P2P interactions)
+        # Draw Relational Scene Graph Edges (P2P, P2W, P2B interactions)
         for i in range(len(box_coords)):
             for j in range(i + 1, len(box_coords)):
                 x1_i, y1_i, x2_i, y2_i, cx_i, cy_i = box_coords[i]
@@ -220,17 +235,69 @@ def annotate_frame(
                 dist = np.hypot(cx_i - cx_j, cy_i - cy_j) / max(w, 1)
 
                 if dist < 0.42:
-                    edge_color = theme_bgr if is_anomaly else (120, 130, 145)
-                    thickness = 2 if is_anomaly else 1
+                    ti = int(semantic_types[i].item() if hasattr(semantic_types[i], 'item') else semantic_types[i]) if semantic_types is not None and i < len(semantic_types) else 4
+                    tj = int(semantic_types[j].item() if hasattr(semantic_types[j], 'item') else semantic_types[j]) if semantic_types is not None and j < len(semantic_types) else 4
+
+                    is_p2w = (detector_impl == "yolo") and ((ti == 0 and tj == 3) or (ti == 3 and tj == 0))
+                    is_p2b = (detector_impl == "yolo") and ((ti == 0 and tj == 2) or (ti == 2 and tj == 0))
+                    is_p2p = (ti == 0 and tj == 0)
+
+                    if is_p2w:
+                        edge_color = (40, 40, 245)
+                        thickness = 3
+                        tag = "THREAT"
+                    elif is_p2b:
+                        edge_color = (11, 158, 245)
+                        thickness = 2
+                        tag = "P2B"
+                    elif is_p2p:
+                        edge_color = theme_bgr if is_anomaly else (120, 130, 145)
+                        thickness = 2 if is_anomaly else 1
+                        tag = "P2P" if is_anomaly else "PROX"
+                    else:
+                        edge_color = (120, 130, 145)
+                        thickness = 1
+                        tag = "REL"
+
                     cv2.line(annotated, (cx_i, cy_i), (cx_j, cy_j), edge_color, thickness, cv2.LINE_AA)
                     mx, my = (cx_i + cx_j) // 2, (cy_i + cy_j) // 2
-                    tag = "REL" if is_anomaly else "PROX"
                     cv2.putText(annotated, tag, (mx - 10, my - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.32, edge_color, 1, cv2.LINE_AA)
 
-        # Draw Bounding Boxes with Actor Labels
+        # Draw Bounding Boxes with Semantic Labels & Confidences
         for idx, (x1, y1, x2, y2, cx, cy) in enumerate(box_coords):
-            label = f"PERSON {idx + 1:02d}" if idx % 2 == 0 else f"OBJECT {idx + 1:02d}"
-            box_col = theme_bgr if is_anomaly else (180, 170, 140)
+            sem_id = 4
+            conf_val = 1.0
+            if semantic_types is not None and idx < len(semantic_types):
+                sem_id = int(semantic_types[idx].item() if hasattr(semantic_types[idx], 'item') else semantic_types[idx])
+            if scores is not None and idx < len(scores):
+                conf_val = float(scores[idx].item() if hasattr(scores[idx], 'item') else scores[idx])
+
+            if detector_impl in {"heuristic", "grid"}:
+                # Fallback mode: honestly label broad heuristic proposals without fake weapon/bag claims
+                if sem_id == 0:
+                    label = f"PERSON [H]"
+                elif sem_id == 1:
+                    label = f"VEHICLE [H]"
+                else:
+                    label = f"OBJECT [H]"
+                box_col = theme_bgr if is_anomaly else (180, 170, 140)
+            else:
+                # Real YOLO recognition
+                if sem_id == 3:
+                    label = f"KNIFE {conf_val:.2f}"
+                    box_col = (40, 40, 245)  # Crimson threat
+                elif sem_id == 2:
+                    label = f"BAG {conf_val:.2f}"
+                    box_col = (11, 158, 245)  # Amber
+                elif sem_id == 0:
+                    label = f"PERSON {conf_val:.2f}"
+                    box_col = theme_bgr if is_anomaly else (180, 170, 140)
+                elif sem_id == 1:
+                    label = f"VEHICLE {conf_val:.2f}"
+                    box_col = (200, 160, 50)
+                else:
+                    label = f"OBJECT {conf_val:.2f}"
+                    box_col = (140, 150, 160)
 
             # Minimalist corner brackets for professional CCTV look
             cv2.rectangle(annotated, (x1, y1), (x2, y2), box_col, 1)
@@ -245,8 +312,15 @@ def annotate_frame(
             cv2.line(annotated, (x2, y2), (x2, y2 - tick), box_col, 2)
 
             # Dark translucent label pill
-            cv2.rectangle(annotated, (x1, max(0, y1 - 18)), (x1 + 72, max(0, y1)), (10, 14, 20), -1)
-            cv2.putText(annotated, label, (x1 + 4, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (220, 230, 240), 1, cv2.LINE_AA)
+            pill_w = max(72, len(label) * 8 + 10)
+            if y1 >= 18:
+                pill_y1, pill_y2 = y1 - 18, y1
+                text_y = y1 - 4
+            else:
+                pill_y1, pill_y2 = y2, min(h, y2 + 18)
+                text_y = min(h - 2, y2 + 14)
+            cv2.rectangle(annotated, (x1, pill_y1), (min(w, x1 + pill_w), pill_y2), (10, 14, 20), -1)
+            cv2.putText(annotated, label, (x1 + 4, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (220, 230, 240), 1, cv2.LINE_AA)
 
     # ── Top Surveillance OSD Bar ──────────────────────────────────────────
     overlay = annotated.copy()
@@ -302,8 +376,15 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
             try:
                 range_val = range_header[6:].strip()
                 parts = range_val.split('-')
-                start = int(parts[0]) if parts[0] else 0
-                end = int(parts[1]) if parts[1] else file_size - 1
+                if not parts[0] and parts[1]:
+                    suffix_length = int(parts[1])
+                    if suffix_length <= 0:
+                        raise ValueError("Invalid suffix byte range")
+                    start = max(0, file_size - suffix_length)
+                    end = file_size - 1
+                else:
+                    start = int(parts[0]) if parts[0] else 0
+                    end = int(parts[1]) if parts[1] else file_size - 1
 
                 if start >= file_size or start > end:
                     handler.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
@@ -320,7 +401,6 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
                 handler.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
                 handler.send_header('Content-Length', str(length))
                 handler.send_header('Accept-Ranges', 'bytes')
-                handler.send_header('Access-Control-Allow-Origin', '*')
                 handler.end_headers()
 
                 with open(file_path, 'rb') as f:
@@ -338,8 +418,8 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
             except CLIENT_DISCONNECT_ERRORS:
                 # Normal client abort/disconnect during video scrub or navigation
                 return
-            except Exception:
-                # If an error occurred during range processing, exit cleanly
+            except (ValueError, IndexError):
+                handler.send_error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, "Invalid byte range")
                 return
 
         # Full content fallback (200 OK)
@@ -347,7 +427,6 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
         handler.send_header('Content-Type', content_type)
         handler.send_header('Content-Length', str(file_size))
         handler.send_header('Accept-Ranges', 'bytes')
-        handler.send_header('Access-Control-Allow-Origin', '*')
         handler.end_headers()
         with open(file_path, 'rb') as f:
             while True:
@@ -372,6 +451,12 @@ def process_video_inference(
     Executes ARGUS dual-layer pipeline and generates annotated base64 frames.
     """
     t_start = time.perf_counter()
+    if GLOBAL_MODEL is None or GLOBAL_CONFIG is None:
+        raise RuntimeError("Model has not been loaded")
+    if not 1 <= frames <= MAX_ANALYSIS_FRAMES:
+        raise ValueError(f"frames must be between 1 and {MAX_ANALYSIS_FRAMES}")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be in [0, 1]")
 
     # Determine video file properties & native FPS
     total_native_frames = 0
@@ -419,11 +504,12 @@ def process_video_inference(
 
     # Neural inference
     t_inf0 = time.perf_counter()
-    with torch.no_grad():
-        out = GLOBAL_MODEL(clip_batch, stream=stream)
+    with MODEL_LOCK, torch.no_grad():
+        out = GLOBAL_MODEL(clip_batch, stream=stream, stream_id=str(source_path.resolve()))
     infer_time_ms = (time.perf_counter() - t_inf0) * 1000.0
 
-    scores = out.scores[0].cpu().numpy().tolist()
+    valid_length = int(out.sequence_lengths[0].item())
+    scores = out.scores[0, :valid_length].cpu().numpy().tolist()
     sampled_indices = out.sampled_indices[0].cpu().tolist() if isinstance(out.sampled_indices[0], torch.Tensor) else list(out.sampled_indices[0])
 
     peak_score = float(np.max(scores))
@@ -473,6 +559,9 @@ def process_video_inference(
 
             frame_bgr = cv2.resize(frame_bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
             boxes = out.boxes[0][idx] if (out.boxes and idx < len(out.boxes[0])) else None
+            sem_types = out.semantic_types[0][idx] if (getattr(out, 'semantic_types', None) and idx < len(out.semantic_types[0])) else None
+            det_scores = out.detection_scores[0][idx] if (getattr(out, 'detection_scores', None) and idx < len(out.detection_scores[0])) else None
+            det_impl = getattr(out, 'detector_impl', 'yolo')
 
             annotated = annotate_frame(
                 frame_bgr=frame_bgr,
@@ -481,7 +570,10 @@ def process_video_inference(
                 threshold=threshold,
                 frame_idx=idx,
                 total_frames=len(sampled_indices),
-                orig_idx=actual_video_frame
+                orig_idx=actual_video_frame,
+                semantic_types=sem_types,
+                scores=det_scores,
+                detector_impl=det_impl,
             )
 
             _, buf = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -515,6 +607,21 @@ def process_video_inference(
     fps = float(len(sampled_indices) / max(infer_time_ms / 1000.0, 1e-4))
     frame_reduction = round((1.0 - (len(sampled_indices) / max(frames, 1))) * 100.0, 1)
 
+    det_impl = getattr(out, 'detector_impl', 'yolo')
+    dispatcher = AlertDispatcher(threshold=threshold)
+    alert_event = dispatcher.dispatch(
+        video_source=str(source_path),
+        timeline_scores=[round(s, 4) for s in scores],
+        keyframe_indices=sampled_indices,
+        boxes_per_frame=out.boxes[0] if out.boxes else None,
+        semantic_types_per_frame=out.semantic_types[0] if getattr(out, 'semantic_types', None) else None,
+        detection_scores_per_frame=out.detection_scores[0] if getattr(out, 'detection_scores', None) else None,
+        edge_indices_per_frame=out.edge_indices[0] if getattr(out, 'edge_indices', None) else None,
+        edge_attrs_per_frame=out.edge_attrs[0] if getattr(out, 'edge_attrs', None) else None,
+        detector_impl=det_impl,
+        class_ids_per_frame=out.class_ids[0] if getattr(out, 'class_ids', None) else None,
+    )
+
     return {
         "status": "success",
         "video_name": source_path.name,
@@ -539,7 +646,19 @@ def process_video_inference(
             "infer_ms": round(infer_time_ms, 1),
             "total_ms": round(total_time_ms, 1)
         },
-        "num_entities": len(out.boxes[0][0]) if (out.boxes and len(out.boxes[0]) > 0) else 0,
+        "detector_implementation": det_impl,
+        "detector_name": "YOLOv11 Semantic" if det_impl == "yolo" else "Heuristic Proposals",
+        "person_count": alert_event.person_count if alert_event else 0,
+        "vehicle_count": alert_event.vehicle_count if alert_event else 0,
+        "bag_count": alert_event.bag_count if alert_event else 0,
+        "weapon_count": alert_event.weapon_count if alert_event else 0,
+        "other_count": alert_event.other_count if alert_event else 0,
+        "object_counts": alert_event.object_counts if (alert_event and alert_event.object_counts) else {},
+        "person_weapon_edges": alert_event.person_weapon_edges if alert_event else 0,
+        "num_person_interactions": alert_event.num_person_interactions if alert_event else 0,
+        "evidence_summary": alert_event.summary if alert_event else "",
+        "evidence_details": alert_event.evidence_details if (alert_event and alert_event.evidence_details) else [],
+        "num_entities": max((len(boxes) for boxes in out.boxes[0]), default=0) if out.boxes else 0,
         "frames": annotated_frames
     }
 
@@ -570,6 +689,30 @@ def get_frontend_html() -> str:
     return raw.replace('%%PRESETS_JSON%%', json.dumps(PRESET_DATASETS))
 
 
+def resolve_static_path(request_path: str) -> Optional[Path]:
+    decoded = urllib.parse.unquote(request_path)
+    segments = [segment for segment in decoded.split('/') if segment]
+    if len(segments) < 2 or segments[0] not in {'demo_samples', 'outputs', 'docs'}:
+        return None
+    root = (Path.cwd() / segments[0]).resolve()
+    candidate = (root / Path(*segments[1:])).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def cleanup_expired_uploads(upload_dir: Path) -> None:
+    cutoff = time.time() - UPLOAD_RETENTION_SECONDS
+    for entry in upload_dir.iterdir() if upload_dir.exists() else []:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            continue
+
+
 class SafeThreadingHTTPServer(ThreadingHTTPServer):
     """ThreadingHTTPServer that gracefully handles client disconnects (video scrubs, tab closes)."""
     daemon_threads = True
@@ -597,9 +740,6 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
             self.end_headers()
             self.wfile.write(body)
         except CLIENT_DISCONNECT_ERRORS:
@@ -608,9 +748,7 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         try:
             self.send_response(HTTPStatus.OK)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.send_header('Allow', 'GET, POST, OPTIONS')
             self.end_headers()
         except CLIENT_DISCONNECT_ERRORS:
             pass
@@ -656,8 +794,8 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
 
         # Serve media files, static docs, or dashboards with HTTP 206 Partial Content range support
         elif path.startswith('/demo_samples/') or path.startswith('/outputs/') or path.startswith('/docs/'):
-            local_file = Path('.' + path)
-            if local_file.exists() and local_file.is_file():
+            local_file = resolve_static_path(path)
+            if local_file is not None:
                 serve_file_ranged(self, local_file)
                 return
 
@@ -676,6 +814,9 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
             # Case A: Preset JSON request
             if 'application/json' in content_type:
                 content_length = int(self.headers.get('Content-Length', 0))
+                if content_length <= 0 or content_length > 1024 * 1024:
+                    self.send_json_response({"status": "error", "message": "Invalid JSON request size"}, status=413)
+                    return
                 raw_body = self.rfile.read(content_length)
                 try:
                     payload = json.loads(raw_body.decode('utf-8'))
@@ -689,7 +830,7 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 stream = bool(payload.get('stream', False))
 
                 # Return pre-cached result if available and using default parameters
-                if preset_id in PRESET_CACHE and abs(threshold - 0.35) < 1e-4 and frames == 24:
+                if preset_id in PRESET_CACHE and abs(threshold - 0.35) < 1e-4 and frames == 24 and not stream:
                     self.send_json_response(PRESET_CACHE[preset_id])
                     return
 
@@ -720,6 +861,7 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
             elif 'multipart/form-data' in content_type:
                 upload_dir = Path('outputs/web_uploads')
                 upload_dir.mkdir(parents=True, exist_ok=True)
+                cleanup_expired_uploads(upload_dir)
 
                 # Extract boundary
                 boundary_match = re.search(r'boundary=([^;]+)', content_type)
@@ -729,6 +871,9 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 boundary = boundary_match.group(1).strip().encode('utf-8')
 
                 content_length = int(self.headers.get('Content-Length', 0))
+                if content_length <= 0 or content_length > MAX_UPLOAD_BYTES:
+                    self.send_json_response({"status": "error", "message": "Upload must be between 1 byte and 100 MB"}, status=413)
+                    return
                 raw_body = self.rfile.read(content_length)
 
                 parsed_form = parse_multipart_data(raw_body, boundary)
@@ -742,8 +887,18 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 threshold = float(parsed_form.get('threshold', 0.35))
                 # For uploaded videos, default to 32 dense frames for high temporal resolution
                 frames = int(parsed_form.get('frames', 32))
+                suffix = Path(filename).suffix.lower()
+                if suffix not in ALLOWED_UPLOAD_EXTENSIONS:
+                    self.send_json_response({"status": "error", "message": "Unsupported video file type"}, status=415)
+                    return
+                if not file_bytes:
+                    self.send_json_response({"status": "error", "message": "Uploaded file is empty"}, status=400)
+                    return
+                if not 1 <= frames <= MAX_ANALYSIS_FRAMES or not 0.0 <= threshold <= 1.0:
+                    self.send_json_response({"status": "error", "message": "Invalid frames or threshold"}, status=400)
+                    return
 
-                saved_path = upload_dir / Path(filename).name
+                saved_path = upload_dir / f"{uuid.uuid4().hex}{suffix}"
                 with open(saved_path, 'wb') as f:
                     f.write(file_bytes)
 
@@ -767,12 +922,20 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description="Run ARGUS Live Web Demo.")
     parser.add_argument('--port', type=int, default=7860, help='Web server port (default: 7860).')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Server bind host (default: 0.0.0.0 for dual-stack).')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='Server bind host (default: localhost only).')
     parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints_joint/best.pt'), help='Model checkpoint.')
+    parser.add_argument('--allow-random-model', action='store_true', help='Explicitly allow untrained random weights for development.')
+    parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow a trusted legacy pickle checkpoint.')
     args = parser.parse_args()
 
     # Preload PyTorch model
-    load_model(args.checkpoint)
+    if not 1 <= args.port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+    load_model(
+        args.checkpoint,
+        allow_random_model=args.allow_random_model,
+        allow_unsafe_checkpoint=args.allow_unsafe_checkpoint,
+    )
 
     # Pre-cache presets for instant 0ms latency switching
     warm_preset_cache()
@@ -785,7 +948,8 @@ def main():
     print("=" * 66)
     print(f"  Local Access:      http://127.0.0.1:{args.port}")
     print(f"  Network Access:    http://localhost:{args.port}")
-    print(f"  Active Model:      Joint E2E Fine-Tuned (0.7949 ROC-AUC)")
+    active_model = "Loaded trained checkpoint" if MODEL_IS_TRAINED else "UNTRAINED DEVELOPMENT MODEL"
+    print(f"  Active Model:      {active_model}")
     print(f"  Device Compute:    {DEVICE.upper()}")
     print("=" * 66)
     print("  Server is non-blocking & multi-threaded. Press Ctrl+C to terminate.\n")
