@@ -15,37 +15,76 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ── COCO Class to ARGUS Semantic Type Mapping ──────────────────────────
+# ── ARGUS Semantic Types & COCO Mapping ───────────────────────────────
+SEMANTIC_TYPE_PERSON = 0
+SEMANTIC_TYPE_VEHICLE = 1
+SEMANTIC_TYPE_BAG = 2
+SEMANTIC_TYPE_WEAPON = 3
+SEMANTIC_TYPE_OTHER = 4
+
+NUM_SEMANTIC_CLASSES = 5
+
+SEMANTIC_CLASS_NAMES = {
+    SEMANTIC_TYPE_PERSON: "person",
+    SEMANTIC_TYPE_VEHICLE: "vehicle",
+    SEMANTIC_TYPE_BAG: "bag",
+    SEMANTIC_TYPE_WEAPON: "weapon",
+    SEMANTIC_TYPE_OTHER: "other object",
+}
+
+# Single explicit COCO-to-ARGUS semantic mapping:
+# 0 -> Person
+# 1..8 -> Vehicle (bicycle, car, motorcycle, airplane, bus, train, truck, boat)
+# 24, 26, 28 -> Bag (backpack, handbag, suitcase)
+# 43 -> Weapon (knife)
+# All other COCO classes default to 4 (Other object).
+COCO_TO_ARGUS: dict[int, int] = {
+    0: SEMANTIC_TYPE_PERSON,
+    1: SEMANTIC_TYPE_VEHICLE,
+    2: SEMANTIC_TYPE_VEHICLE,
+    3: SEMANTIC_TYPE_VEHICLE,
+    4: SEMANTIC_TYPE_VEHICLE,
+    5: SEMANTIC_TYPE_VEHICLE,
+    6: SEMANTIC_TYPE_VEHICLE,
+    7: SEMANTIC_TYPE_VEHICLE,
+    8: SEMANTIC_TYPE_VEHICLE,
+    24: SEMANTIC_TYPE_BAG,
+    26: SEMANTIC_TYPE_BAG,
+    28: SEMANTIC_TYPE_BAG,
+    43: SEMANTIC_TYPE_WEAPON,
+}
+
 PERSON_CLASSES = {0}
-VEHICLE_CLASSES = {2, 3, 5, 7}          # car, motorcycle, bus, truck
-BAG_CLASSES = {24, 26, 28}              # backpack, handbag, suitcase
-WEAPON_CLASSES = {43}                   # knife
+VEHICLE_CLASSES = {1, 2, 3, 4, 5, 6, 7, 8}
+BAG_CLASSES = {24, 26, 28}
+WEAPON_CLASSES = {43}
 
 
 def _semantic_type(cls_id: int) -> int:
-    """Map COCO class index to semantic type integer (0=person, 1=vehicle, 2=object)."""
-    if cls_id in PERSON_CLASSES:
-        return 0
-    if cls_id in VEHICLE_CLASSES:
-        return 1
-    return 2
+    """Map COCO class index to ARGUS semantic type:
+    0=person, 1=vehicle, 2=bag, 3=weapon, 4=other object.
+    Unknown COCO classes map to 4 (other object).
+    """
+    return COCO_TO_ARGUS.get(int(cls_id), SEMANTIC_TYPE_OTHER)
 
 
 class DetectionResult:
     """Container for per-frame detection outputs."""
-    __slots__ = ("boxes", "scores", "class_ids", "semantic_types")
+    __slots__ = ("boxes", "scores", "class_ids", "semantic_types", "detector_impl")
 
     def __init__(
         self,
         boxes: torch.Tensor,
         scores: torch.Tensor,
         class_ids: torch.Tensor,
-        semantic_types: torch.Tensor
+        semantic_types: torch.Tensor,
+        detector_impl: str = "yolo",
     ):
         self.boxes = boxes                      # (N, 4) normalised xyxy in [0, 1]
-        self.scores = scores                    # (N,) confidence
-        self.class_ids = class_ids              # (N,) class index
-        self.semantic_types = semantic_types    # (N,) 0=person, 1=vehicle, 2=object
+        self.scores = scores                    # (N,) detector confidence in [0, 1]
+        self.class_ids = class_ids              # (N,) original COCO class index
+        self.semantic_types = semantic_types    # (N,) 0=person, 1=vehicle, 2=bag, 3=weapon, 4=other object
+        self.detector_impl = detector_impl      # "yolo", "heuristic", or "grid"
 
 
 class RoIFeatureExtractor(nn.Module):
@@ -204,6 +243,7 @@ class SemanticDetector(nn.Module):
             scores=scores.to(frame.device),
             class_ids=cids.to(frame.device),
             semantic_types=sem.to(frame.device),
+            detector_impl="yolo",
         )
 
     def _fallback_detect(self, frame: torch.Tensor, h: int, w: int) -> DetectionResult:
@@ -212,26 +252,32 @@ class SemanticDetector(nn.Module):
 
         # Heuristic semantic type tagging:
         # Tall boxes (height > 1.3 * width) -> likely Person (0)
-        # Broad or very large boxes -> Vehicle/Object (1 or 2)
+        # Broad or very large boxes -> Vehicle (1)
+        # All others -> Other object (4)
+        # NEVER emit fake Weapon (3) or Bag (2) in heuristic fallback mode!
         widths = boxes[:, 2] - boxes[:, 0]
         heights = boxes[:, 3] - boxes[:, 1]
         aspect_ratio = heights / (widths + 1e-6)
 
-        sem = torch.full((n,), 2, device=frame.device, dtype=torch.long)  # default: Generic object
-        sem[widths * heights > 0.25] = 1   # Large vehicle / boundary
-        sem[aspect_ratio > 1.3] = 0        # Person (tall boxes override)
+        sem = torch.full((n,), SEMANTIC_TYPE_OTHER, device=frame.device, dtype=torch.long)  # default: Other object (4)
+        sem[widths * heights > 0.25] = SEMANTIC_TYPE_VEHICLE   # Large vehicle (1)
+        sem[aspect_ratio > 1.3] = SEMANTIC_TYPE_PERSON        # Person (tall boxes override) (0)
 
+        impl = "grid" if self.model_name in {"heuristic", "grid"} and self.yolo is None else "heuristic"
         return DetectionResult(
             boxes=boxes,
             scores=torch.ones(n, device=frame.device),
             class_ids=sem,
             semantic_types=sem,
+            detector_impl=impl,
         )
 
     def _empty(self, device: torch.device) -> DetectionResult:
+        impl = "yolo" if self.yolo is not None else ("grid" if self.model_name in {"heuristic", "grid"} else "heuristic")
         return DetectionResult(
             boxes=torch.empty((0, 4), device=device),
             scores=torch.empty((0,), device=device),
             class_ids=torch.empty((0,), device=device, dtype=torch.long),
             semantic_types=torch.empty((0,), device=device, dtype=torch.long),
+            detector_impl=impl,
         )

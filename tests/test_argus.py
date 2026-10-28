@@ -112,10 +112,10 @@ def test_semantic_scene_graph_relations():
     builder = DynamicSceneGraphBuilder(max_objects=6, detector=detector, use_semantic=True)
     frame = torch.rand(3, 64, 64)
     node_feats, (src, dst), edge_attr, boxes = builder.build(frame)
-    # Semantic node features have at least 10 dims
-    assert node_feats.shape[-1] >= 10
-    # Semantic edge features have 7 dims (4 kinematic + 3 relational: P2P, P2O, O2O)
-    assert edge_attr.shape[-1] == 7
+    # Semantic node features have 12 dims (6 kinematic + 5 semantic one-hot + 1 conf)
+    assert node_feats.shape[-1] >= 12
+    # Semantic edge features have 10 dims (4 kinematic + 3 broad relational + 3 threat-aware: P2W, P2B, W2O)
+    assert edge_attr.shape[-1] == 10
 
 
 def test_dynamic_attention_modulation():

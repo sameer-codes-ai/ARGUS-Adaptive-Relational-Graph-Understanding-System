@@ -22,6 +22,14 @@ from pathlib import Path
 import time
 from typing import Callable, Dict, List, Optional
 
+from .detector import (
+    SEMANTIC_TYPE_PERSON,
+    SEMANTIC_TYPE_VEHICLE,
+    SEMANTIC_TYPE_BAG,
+    SEMANTIC_TYPE_WEAPON,
+    SEMANTIC_TYPE_OTHER,
+)
+
 
 class AlertSeverity(str, Enum):
     NORMAL = "NORMAL"
@@ -46,6 +54,15 @@ class AlertEvent:
     summary: str
     decision_threshold: float = 0.5
     notification_sent: bool = False
+    person_count: int = 0
+    vehicle_count: int = 0
+    bag_count: int = 0
+    weapon_count: int = 0
+    other_count: int = 0
+    object_counts: Optional[Dict[str, int]] = None
+    person_weapon_edges: int = 0
+    detector_impl: str = "yolo"
+    evidence_details: Optional[List[str]] = None
 
     def to_dict(self) -> Dict:
         d = asdict(self)
@@ -98,7 +115,13 @@ class AlertDispatcher:
         video_source: str,
         timeline_scores: List[float],
         keyframe_indices: List[int],
-        boxes_per_frame: Optional[List[List]] = None
+        boxes_per_frame: Optional[List[List]] = None,
+        semantic_types_per_frame: Optional[List[List]] = None,
+        detection_scores_per_frame: Optional[List[List]] = None,
+        edge_indices_per_frame: Optional[List[List]] = None,
+        edge_attrs_per_frame: Optional[List[List]] = None,
+        detector_impl: str = "yolo",
+        class_ids_per_frame: Optional[List[List]] = None,
     ) -> Optional[AlertEvent]:
         """
         Evaluate scores and dispatch an alert if threshold is breached and cooldown has elapsed.
@@ -121,8 +144,120 @@ class AlertDispatcher:
             severity = AlertSeverity.LOW
         now = time.time()
 
-        total_boxes = max((len(b) for b in boxes_per_frame), default=0) if boxes_per_frame else 0
-        person_count = 0  # Semantic person identities are not supplied to this API.
+        if boxes_per_frame:
+            total_boxes = max((len(b) for b in boxes_per_frame), default=0)
+        elif semantic_types_per_frame:
+            total_boxes = max((len(s) for s in semantic_types_per_frame), default=0)
+        else:
+            total_boxes = 0
+
+        # Calculate threat & interaction metrics honestly from graph entities & edges
+        is_heuristic = detector_impl in {"heuristic", "grid"}
+        num_person_interactions = 0
+        person_weapon_edges = 0
+        person_count = 0
+        vehicle_count = 0
+        weapon_count = 0
+        bag_count = 0
+        other_count = 0
+        evidence_details: List[str] = []
+
+        if semantic_types_per_frame:
+            for f_idx, sems in enumerate(semantic_types_per_frame):
+                sems_list = [int(s.item() if hasattr(s, 'item') else s) for s in sems]
+                p_in_frame = sum(1 for s in sems_list if s == SEMANTIC_TYPE_PERSON)
+                v_in_frame = sum(1 for s in sems_list if s == SEMANTIC_TYPE_VEHICLE)
+                o_in_frame = sum(1 for s in sems_list if s == SEMANTIC_TYPE_OTHER)
+                if p_in_frame > person_count:
+                    person_count = p_in_frame
+                if v_in_frame > vehicle_count:
+                    vehicle_count = v_in_frame
+                if o_in_frame > other_count:
+                    other_count = o_in_frame
+
+                if not is_heuristic:
+                    w_in_frame = sum(1 for s in sems_list if s == SEMANTIC_TYPE_WEAPON)
+                    b_in_frame = sum(1 for s in sems_list if s == SEMANTIC_TYPE_BAG)
+                    if w_in_frame > weapon_count:
+                        weapon_count = w_in_frame
+                    if b_in_frame > bag_count:
+                        bag_count = b_in_frame
+
+                # Count interactions from edges if available
+                if edge_indices_per_frame and f_idx < len(edge_indices_per_frame):
+                    edges = edge_indices_per_frame[f_idx]
+                    if edges is not None and len(edges) == 2:
+                        src, dst = edges
+                        src_l = src.tolist() if hasattr(src, 'tolist') else list(src)
+                        dst_l = dst.tolist() if hasattr(dst, 'tolist') else list(dst)
+                        seen_pairs = set()
+                        for u, v in zip(src_l, dst_l):
+                            if u == v or u >= len(sems_list) or v >= len(sems_list):
+                                continue
+                            pair = (min(u, v), max(u, v))
+                            if pair in seen_pairs:
+                                continue
+                            seen_pairs.add(pair)
+                            tu, tv = sems_list[u], sems_list[v]
+                            if tu == SEMANTIC_TYPE_PERSON and tv == SEMANTIC_TYPE_PERSON:
+                                num_person_interactions += 1
+                            if not is_heuristic:
+                                if (tu == SEMANTIC_TYPE_PERSON and tv == SEMANTIC_TYPE_WEAPON) or (tu == SEMANTIC_TYPE_WEAPON and tv == SEMANTIC_TYPE_PERSON):
+                                    person_weapon_edges += 1
+                elif boxes_per_frame and f_idx < len(boxes_per_frame):
+                    # Proximity fallback if explicit edges not passed
+                    f_boxes = boxes_per_frame[f_idx]
+                    nb = len(f_boxes)
+                    for i in range(nb):
+                        for j in range(i + 1, nb):
+                            if i < len(sems_list) and j < len(sems_list):
+                                bi = f_boxes[i]
+                                bj = f_boxes[j]
+                                ci = [(bi[0] + bi[2]) / 2.0, (bi[1] + bi[3]) / 2.0]
+                                cj = [(bj[0] + bj[2]) / 2.0, (bj[1] + bj[3]) / 2.0]
+                                dist = ((ci[0] - cj[0]) ** 2 + (ci[1] - cj[1]) ** 2) ** 0.5
+                                if dist <= 0.6:
+                                    tu, tv = sems_list[i], sems_list[j]
+                                    if tu == SEMANTIC_TYPE_PERSON and tv == SEMANTIC_TYPE_PERSON:
+                                        num_person_interactions += 1
+                                    if not is_heuristic:
+                                        if (tu == SEMANTIC_TYPE_PERSON and tv == SEMANTIC_TYPE_WEAPON) or (tu == SEMANTIC_TYPE_WEAPON and tv == SEMANTIC_TYPE_PERSON):
+                                            person_weapon_edges += 1
+
+        # Formulate evidence details and confidence
+        if not is_heuristic and weapon_count > 0:
+            top_weapon_conf = 0.0
+            if detection_scores_per_frame and semantic_types_per_frame:
+                for sems, scs in zip(semantic_types_per_frame, detection_scores_per_frame):
+                    for s, sc in zip(sems, scs):
+                        st = int(s.item() if hasattr(s, 'item') else s)
+                        sc_val = float(sc.item() if hasattr(sc, 'item') else sc)
+                        if st == SEMANTIC_TYPE_WEAPON and sc_val > top_weapon_conf:
+                            top_weapon_conf = sc_val
+            knife_str = f"knife, confidence {top_weapon_conf:.2f}" if top_weapon_conf > 0 else "knife/weapon"
+            evidence_details.append(f"Detected {knife_str}")
+        if not is_heuristic and bag_count > 0:
+            evidence_details.append(f"{bag_count} bag(s) tracked")
+        if person_weapon_edges > 0:
+            evidence_details.append(f"{person_weapon_edges} person-weapon interaction(s)")
+        if num_person_interactions > 0:
+            evidence_details.append(f"{num_person_interactions} person interaction(s)")
+
+        if is_anomaly:
+            if evidence_details:
+                summary = f"[{severity.value}] Anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}. Evidence: {', '.join(evidence_details)}."
+            else:
+                summary = f"[{severity.value}] Anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
+        else:
+            summary = f"[NORMAL] No anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
+
+        object_counts = {
+            "person": person_count,
+            "vehicle": vehicle_count,
+            "bag": bag_count,
+            "weapon": weapon_count,
+            "other_object": other_count,
+        }
 
         event = AlertEvent(
             timestamp=now,
@@ -133,14 +268,19 @@ class AlertDispatcher:
             keyframe_indices=keyframe_indices,
             timeline_scores=[round(s, 4) for s in timeline_scores],
             num_detected_objects=total_boxes,
-            num_person_interactions=person_count,
+            num_person_interactions=num_person_interactions,
             is_anomaly=is_anomaly,
-            summary=(
-                f"[{severity.value}] Anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
-                if is_anomaly else
-                f"[NORMAL] No anomaly detected (Peak: {peak_score:.2f}) on {Path(video_source).name}"
-            ),
+            summary=summary,
             decision_threshold=self.threshold,
+            person_count=person_count,
+            vehicle_count=vehicle_count,
+            bag_count=bag_count,
+            weapon_count=weapon_count,
+            other_count=other_count,
+            object_counts=object_counts,
+            person_weapon_edges=person_weapon_edges,
+            detector_impl=detector_impl,
+            evidence_details=evidence_details if evidence_details else None,
         )
 
         # Dispatch if anomalous and cooldown satisfied
@@ -328,12 +468,17 @@ def generate_dashboard_html(
         </div>
 
         <div class="card">
-            <div class="card-label">Stream Telemetry & Metadata</div>
+            <div class="card-label">Stream Telemetry & Evidence</div>
             <div class="meta-list">
                 <div><strong>Source Stream:</strong> {safe_video_source}</div>
-                <div><strong>Detected Entities:</strong> {event.num_detected_objects} bounding boxes</div>
+                <div><strong>Detector Pipeline:</strong> {event.detector_impl.upper()} ({'YOLOv11 Semantic Recognition' if event.detector_impl == 'yolo' else 'Heuristic Proposals'})</div>
+                <div><strong>Detected Entities:</strong> {event.num_detected_objects} bounding boxes ({event.person_count} person(s), {event.vehicle_count} vehicle(s), {event.bag_count} bag(s), {event.weapon_count} weapon(s), {event.other_count} other)</div>
+                <div><strong>Person Interactions:</strong> {event.num_person_interactions} P2P interaction edges</div>
+                <div><strong>Weapon Findings:</strong> {event.weapon_count} weapon(s) detected ({event.person_weapon_edges} Person-Weapon interaction edges)</div>
+                <div><strong>Bag Findings:</strong> {event.bag_count} bag(s) tracked</div>
                 <div><strong>Inference Latency:</strong> {latency_ms:.1f} ms / clip</div>
                 <div><strong>Classification Verdict:</strong> <span style="color: {status_color}; font-weight: 600;">{status_text}</span></div>
+                {f'<div style="margin-top:8px;padding:8px 12px;background:rgba(244,63,94,0.12);border-radius:6px;border:1px solid rgba(244,63,94,0.3);color:#fb7185;"><strong>Evidence Details:</strong> {", ".join(event.evidence_details)}</div>' if event.evidence_details else ''}
             </div>
         </div>
     </div>

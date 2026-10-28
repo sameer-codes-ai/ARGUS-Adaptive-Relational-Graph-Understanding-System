@@ -23,6 +23,7 @@ model:
   use_semantic_detector: true
   detector_name: "yolo11n.pt"
   detector_confidence: 0.3
+  semantic_schema_version: "threat5"
   node_visual_dim: 64
   allow_component_fallbacks: false
   backbone_pretrained: true

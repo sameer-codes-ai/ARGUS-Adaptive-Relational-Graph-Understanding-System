@@ -13,6 +13,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .detector import (
+    NUM_SEMANTIC_CLASSES,
+    SEMANTIC_TYPE_PERSON,
+    SEMANTIC_TYPE_VEHICLE,
+    SEMANTIC_TYPE_BAG,
+    SEMANTIC_TYPE_WEAPON,
+    SEMANTIC_TYPE_OTHER,
+)
+
+# ── Shared Graph Dimension Constants ───────────────────────────────────
+KINEMATIC_NODE_DIM = 6                                              # centers (2) + sizes (2) + velocity (2)
+SEMANTIC_NODE_DIM = KINEMATIC_NODE_DIM + NUM_SEMANTIC_CLASSES + 1  # 6 + 5 + 1 = 12
+LEGACY_SEMANTIC_NODE_DIM = 10                                       # 6 + 3 + 1 (legacy3 schema)
+
+KINEMATIC_EDGE_DIM = 4                                              # dist, iou, rel_vel, persistence
+RELATIONAL_EDGE_DIM = 7                                             # 4 kinematic + 3 broad (P2P, P2O, O2O)
+THREAT_RELATIONAL_EDGE_DIM = 10                                     # 4 kinematic + 3 broad + 3 threat (P2W, P2B, W2O)
+
 
 class GridDetector:
     """Fast non-learned heuristic detector using spatial gradient and variance."""
@@ -58,11 +76,13 @@ class DynamicSceneGraphBuilder:
         detector=None,
         use_semantic: bool = False,
         tracking_iou_threshold: float = 0.1,
+        semantic_schema_version: str = "threat5",
     ):
         self.max_objects = max_objects
         self.dist_threshold = dist_threshold
         self.use_semantic = use_semantic
         self.tracking_iou_threshold = tracking_iou_threshold
+        self.semantic_schema_version = semantic_schema_version
         if detector is not None:
             self.detector = detector
         elif use_semantic:
@@ -94,6 +114,7 @@ class DynamicSceneGraphBuilder:
         """
         # Detection step — use pre-computed result if available
         sem_types = None
+        scores = None
         if detection_result is not None:
             if hasattr(detection_result, 'boxes'):
                 boxes = detection_result.boxes
@@ -114,8 +135,32 @@ class DynamicSceneGraphBuilder:
 
         n = len(boxes)
         visual_dim = visual_features.shape[1] if visual_features is not None and visual_features.ndim == 2 else 0
-        node_dim = (10 if self.use_semantic and sem_types is not None else 6) + visual_dim
-        edge_dim = 7 if self.use_semantic and sem_types is not None else 4
+
+        # Ensure semantic types exist if semantic graph is enabled
+        if self.use_semantic and sem_types is None and n > 0:
+            sem_types = torch.full((n,), SEMANTIC_TYPE_OTHER, dtype=torch.long, device=frame.device)
+            if scores is None:
+                scores = torch.ones((n,), device=frame.device)
+
+        if sem_types is not None:
+            if not isinstance(sem_types, torch.Tensor):
+                sem_types = torch.as_tensor(sem_types, device=frame.device, dtype=torch.long)
+            sem_types = sem_types.view(-1)
+
+        if scores is not None:
+            if not isinstance(scores, torch.Tensor):
+                scores = torch.as_tensor(scores, device=frame.device, dtype=torch.float32)
+            scores = scores.view(-1)
+
+        # Calculate exact node and edge dimensions based on schema
+        if self.use_semantic:
+            base_node_dim = SEMANTIC_NODE_DIM if self.semantic_schema_version == "threat5" else LEGACY_SEMANTIC_NODE_DIM
+            edge_dim = THREAT_RELATIONAL_EDGE_DIM if self.semantic_schema_version == "threat5" else RELATIONAL_EDGE_DIM
+        else:
+            base_node_dim = KINEMATIC_NODE_DIM
+            edge_dim = KINEMATIC_EDGE_DIM
+        node_dim = base_node_dim + visual_dim
+
         if n == 0:
             empty_nodes = torch.empty((0, node_dim), device=frame.device, dtype=frame.dtype)
             empty_idx = torch.empty((0,), device=frame.device, dtype=torch.long)
@@ -153,15 +198,15 @@ class DynamicSceneGraphBuilder:
 
         # Build node features
         if self.use_semantic and sem_types is not None:
-            # 6 dims kinematics + 3 dims semantic one-hot + 1 dim confidence = 10 dims
-            sem_one_hot = F.one_hot(sem_types.clamp(0, 2), num_classes=3).float().to(frame.device)
-            conf = scores.unsqueeze(-1).to(frame.device) if 'scores' in locals() else torch.ones((n, 1), device=frame.device)
+            num_classes = NUM_SEMANTIC_CLASSES if self.semantic_schema_version == "threat5" else 3
+            sem_one_hot = F.one_hot(sem_types.clamp(0, num_classes - 1), num_classes=num_classes).float().to(frame.device)
+            conf = scores.unsqueeze(-1).to(frame.device) if scores is not None else torch.ones((n, 1), device=frame.device)
             node_parts = [centers, sizes, velocity, sem_one_hot, conf]
             if visual_features is not None and visual_features.shape[0] == n:
                 node_parts.append(visual_features)
             node_feats = torch.cat(node_parts, dim=-1)
         else:
-            # Legacy 6-dim node features: [centers, sizes, velocity]
+            # Kinematic 6-dim node features: [centers, sizes, velocity]
             node_parts = [centers, sizes, velocity]
             if visual_features is not None and visual_features.shape[0] == n:
                 node_parts.append(visual_features)
@@ -187,15 +232,27 @@ class DynamicSceneGraphBuilder:
                     rel_vel = torch.norm(velocity[i] - velocity[j])
 
                     if self.use_semantic and sem_types is not None:
-                        ti = int(sem_types[i].item())
-                        tj = int(sem_types[j].item())
-                        is_p2p = 1.0 if (ti == 0 and tj == 0) else 0.0
-                        is_p2o = 1.0 if ((ti == 0 and tj != 0) or (ti != 0 and tj == 0)) else 0.0
-                        is_o2o = 1.0 if (ti != 0 and tj != 0) else 0.0
-                        # 4 kinematic + 3 relational = 7 dims
-                        edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0, is_p2p, is_p2o, is_o2o])
+                        ti = int(sem_types[i].item() if hasattr(sem_types[i], 'item') else sem_types[i])
+                        tj = int(sem_types[j].item() if hasattr(sem_types[j], 'item') else sem_types[j])
+                        is_p2p = 1.0 if (ti == SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_PERSON) else 0.0
+                        is_p2o = 1.0 if ((ti == SEMANTIC_TYPE_PERSON and tj != SEMANTIC_TYPE_PERSON) or (ti != SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_PERSON)) else 0.0
+                        is_o2o = 1.0 if (ti != SEMANTIC_TYPE_PERSON and tj != SEMANTIC_TYPE_PERSON) else 0.0
+
+                        if self.semantic_schema_version == "threat5":
+                            # Threat-aware relations:
+                            # Person-to-Weapon (P2W)
+                            is_p2w = 1.0 if ((ti == SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_WEAPON) or (ti == SEMANTIC_TYPE_WEAPON and tj == SEMANTIC_TYPE_PERSON)) else 0.0
+                            # Person-to-Bag (P2B)
+                            is_p2b = 1.0 if ((ti == SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_BAG) or (ti == SEMANTIC_TYPE_BAG and tj == SEMANTIC_TYPE_PERSON)) else 0.0
+                            # Weapon-to-Object (W2O): weapon interacting with any non-person entity
+                            is_w2o = 1.0 if ((ti == SEMANTIC_TYPE_WEAPON and tj != SEMANTIC_TYPE_PERSON) or (tj == SEMANTIC_TYPE_WEAPON and ti != SEMANTIC_TYPE_PERSON)) else 0.0
+                            # 4 kinematic + 3 broad relational + 3 threat-aware relational = 10 dims
+                            edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0, is_p2p, is_p2o, is_o2o, is_p2w, is_p2b, is_w2o])
+                        else:
+                            # Legacy 4 kinematic + 3 relational = 7 dims
+                            edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0, is_p2p, is_p2o, is_o2o])
                     else:
-                        # Legacy 4 dims
+                        # Non-semantic 4 dims: [dist, iou, rel_vel, persistence]
                         edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0])
 
                     edges_src.append(i)
@@ -206,9 +263,13 @@ class DynamicSceneGraphBuilder:
                 edges_src.append(i)
                 edges_dst.append(i)
                 if self.use_semantic and sem_types is not None:
-                    ti = int(sem_types[i].item())
-                    is_p = 1.0 if ti == 0 else 0.0
-                    edge_attrs.append([0.0, 1.0, 0.0, 1.0, is_p, 0.0, 1.0 - is_p])
+                    ti = int(sem_types[i].item() if hasattr(sem_types[i], 'item') else sem_types[i])
+                    is_p = 1.0 if ti == SEMANTIC_TYPE_PERSON else 0.0
+                    if self.semantic_schema_version == "threat5":
+                        is_w = 1.0 if ti == SEMANTIC_TYPE_WEAPON else 0.0
+                        edge_attrs.append([0.0, 1.0, 0.0, 1.0, is_p, 0.0, 1.0 - is_p, 0.0, 0.0, is_w])
+                    else:
+                        edge_attrs.append([0.0, 1.0, 0.0, 1.0, is_p, 0.0, 1.0 - is_p])
                 else:
                     edge_attrs.append([0.0, 1.0, 0.0, 1.0])
 
@@ -235,6 +296,8 @@ class EdgeGAT(nn.Module):
 
     def forward(self, x: torch.Tensor, edges: Tuple[torch.Tensor, torch.Tensor], edge_attr: torch.Tensor) -> torch.Tensor:
         n = x.shape[0]
+        if n == 0:
+            return torch.zeros((0, self.heads * self.head_dim), device=x.device, dtype=x.dtype)
         h = self.proj(x).view(n, self.heads, self.head_dim)
         src, dst = edges
         e_feat = self.edge_proj(edge_attr).view(-1, self.heads, self.head_dim)
