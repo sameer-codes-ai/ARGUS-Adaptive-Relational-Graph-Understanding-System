@@ -56,11 +56,13 @@ class DynamicSceneGraphBuilder:
         max_objects: int = 12,
         dist_threshold: float = 0.6,
         detector=None,
-        use_semantic: bool = False
+        use_semantic: bool = False,
+        tracking_iou_threshold: float = 0.1,
     ):
         self.max_objects = max_objects
         self.dist_threshold = dist_threshold
         self.use_semantic = use_semantic
+        self.tracking_iou_threshold = tracking_iou_threshold
         if detector is not None:
             self.detector = detector
         elif use_semantic:
@@ -111,12 +113,41 @@ class DynamicSceneGraphBuilder:
             boxes = self.detector(frame)
 
         n = len(boxes)
+        visual_dim = visual_features.shape[1] if visual_features is not None and visual_features.ndim == 2 else 0
+        node_dim = (10 if self.use_semantic and sem_types is not None else 6) + visual_dim
+        edge_dim = 7 if self.use_semantic and sem_types is not None else 4
+        if n == 0:
+            empty_nodes = torch.empty((0, node_dim), device=frame.device, dtype=frame.dtype)
+            empty_idx = torch.empty((0,), device=frame.device, dtype=torch.long)
+            empty_edges = torch.empty((0, edge_dim), device=frame.device, dtype=frame.dtype)
+            return empty_nodes, (empty_idx, empty_idx), empty_edges, boxes
         centers = (boxes[:, :2] + boxes[:, 2:]) / 2.0
         sizes = (boxes[:, 2:] - boxes[:, :2]).clamp(min=1e-4)
 
-        if prev_boxes is not None and len(prev_boxes) == n:
+        if prev_boxes is not None and len(prev_boxes) > 0:
             prev_centers = (prev_boxes[:, :2] + prev_boxes[:, 2:]) / 2.0
-            velocity = centers - prev_centers
+            velocity = torch.zeros_like(centers)
+            # Greedy IoU association prevents detector ordering changes from being
+            # interpreted as object motion.
+            used_prev: set[int] = set()
+            for current_idx in range(n):
+                box = boxes[current_idx]
+                ix1 = torch.maximum(box[0], prev_boxes[:, 0])
+                iy1 = torch.maximum(box[1], prev_boxes[:, 1])
+                ix2 = torch.minimum(box[2], prev_boxes[:, 2])
+                iy2 = torch.minimum(box[3], prev_boxes[:, 3])
+                inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
+                area_current = (box[2] - box[0]).clamp(min=0) * (box[3] - box[1]).clamp(min=0)
+                area_previous = ((prev_boxes[:, 2] - prev_boxes[:, 0]).clamp(min=0)
+                                 * (prev_boxes[:, 3] - prev_boxes[:, 1]).clamp(min=0))
+                ious = inter / (area_current + area_previous - inter + 1e-6)
+                for prev_idx in used_prev:
+                    ious[prev_idx] = -1.0
+                best_iou, best_idx = ious.max(dim=0)
+                if float(best_iou) >= self.tracking_iou_threshold:
+                    matched = int(best_idx)
+                    used_prev.add(matched)
+                    velocity[current_idx] = centers[current_idx] - prev_centers[matched]
         else:
             velocity = torch.zeros_like(centers)
 

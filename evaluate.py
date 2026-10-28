@@ -1,5 +1,4 @@
 import argparse
-import io
 import json
 from pathlib import Path
 import time
@@ -11,6 +10,7 @@ from argus import ARGUS
 from argus.config import ARGUSConfig
 from argus.data import VideoManifest, SyntheticSurveillance
 from argus.metrics import binary_metrics
+from argus.checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
 
 
 def format_duration(seconds: float) -> str:
@@ -37,13 +37,16 @@ def parse_args():
     parser.add_argument('--image-size', type=int, default=None, help='Spatial resolution. Auto-detected from checkpoint if not specified.')
     parser.add_argument('--output-json', type=Path, default=None, help='Optional path to save metrics JSON.')
     parser.add_argument('--max-samples', type=int, default=None, help='Limit evaluation samples for fast testing.')
+    parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow a trusted legacy pickle checkpoint.')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    if args.config and args.config.exists():
+    if args.config and not args.config.exists():
+        raise FileNotFoundError(f"Configuration file not found: {args.config}")
+    if args.config:
         import yaml
         with open(args.config, 'r', encoding='utf-8') as f:
             yaml_cfg = yaml.safe_load(f) or {}
@@ -53,6 +56,10 @@ def main():
 
     if not args.synthetic and not args.manifest:
         raise ValueError("Either --synthetic, --manifest, or a --config containing test_manifest must be specified.")
+    if args.batch_size <= 0 or args.frames <= 0:
+        raise ValueError("batch-size and frames must be positive")
+    if args.max_samples is not None and args.max_samples <= 0:
+        raise ValueError("max-samples must be positive when provided")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Evaluation compute device: {device.upper()}")
@@ -60,18 +67,16 @@ def main():
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
-    with open(args.checkpoint, 'rb') as f:
-        checkpoint_bytes = io.BytesIO(f.read())
-    state = torch.load(checkpoint_bytes, map_location=device, weights_only=False)
+    state = load_checkpoint(args.checkpoint, map_location=device, allow_unsafe=args.allow_unsafe_checkpoint)
 
     saved_cfg = state.get('config', {})
-    config = ARGUSConfig.from_dict(saved_cfg) if saved_cfg else ARGUSConfig()
+    config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
     if args.image_size is not None:
         config.image_size = args.image_size
 
     model = ARGUS(config=config).to(device)
-    state_dict = state['model'] if isinstance(state, dict) and 'model' in state else state
-    model.load_state_dict(state_dict)
+    validate_component_metadata(state, model)
+    model.load_state_dict(model_state_dict(state))
     model.eval()
     print(f"Loaded checkpoint: {args.checkpoint} (Epoch {state.get('epoch', '?') if isinstance(state, dict) else '?'})")
 
@@ -100,6 +105,12 @@ def main():
 
     with torch.no_grad():
         for frames, labels in loader:
+            remaining = total_samples_to_eval - samples_processed
+            if remaining <= 0:
+                break
+            if frames.shape[0] > remaining:
+                frames = frames[:remaining]
+                labels = labels[:remaining]
             b, t = frames.shape[:2]
             frames = frames.to(device)
 
@@ -110,7 +121,7 @@ def main():
             total_time += step_elapsed
             total_frames += b * t
 
-            clip_scores = out.scores.max(dim=1).values.cpu()
+            clip_scores = out.scores.masked_fill(~out.valid_mask, float('-inf')).max(dim=1).values.cpu()
             all_scores.append(clip_scores)
             all_labels.append(labels.cpu())
 
@@ -122,12 +133,14 @@ def main():
             })
             pbar.update(b)
 
-            if args.max_samples and samples_processed >= args.max_samples:
+            if samples_processed >= total_samples_to_eval:
                 break
 
     pbar.close()
     wall_clock_time = time.perf_counter() - eval_start_time
 
+    if not all_scores:
+        raise ValueError("Evaluation dataset produced no samples")
     scores_t = torch.cat(all_scores)
     labels_t = torch.cat(all_labels)
 

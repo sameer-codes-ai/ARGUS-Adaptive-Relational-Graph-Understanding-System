@@ -20,10 +20,10 @@ class GraphVisualFusion(nn.Module):
     Fuses dense visual patch tokens with structural scene graph embeddings
     via gated cross-attention.
     """
-    def __init__(self, visual_dim: int = 192, graph_dim: int = 128):
+    def __init__(self, visual_dim: int = 192, graph_dim: int = 128, heads: int = 4):
         super().__init__()
         self.g_proj = nn.Linear(graph_dim, visual_dim)
-        self.attn = nn.MultiheadAttention(embed_dim=visual_dim, num_heads=4, batch_first=True)
+        self.attn = nn.MultiheadAttention(embed_dim=visual_dim, num_heads=heads, batch_first=True)
         self.gate = nn.Sequential(nn.Linear(visual_dim * 2, visual_dim), nn.Sigmoid())
         self.norm = nn.LayerNorm(visual_dim)
 
@@ -79,30 +79,37 @@ class TemporalMemory(nn.Module):
         self.dim = dim
         self.size = size
         self.register_buffer('bank', None)
+        self._stream_banks: dict[str, torch.Tensor] = {}
 
-    def reset(self):
+    def reset(self, stream_id: Optional[str] = None):
+        if stream_id is not None:
+            self._stream_banks.pop(str(stream_id), None)
+            if str(stream_id) == "default":
+                self.bank = None
+            return
+        self._stream_banks.clear()
         self.bank = None
 
-    def forward(self, latest: torch.Tensor, update: bool = True) -> torch.Tensor:
-        b = latest.shape[0]
-        if self.bank is not None and self.bank.shape[0] != b:
-            if b < self.bank.shape[0]:
-                self.bank = self.bank[:b]
-            else:
-                self.bank = None
-
-        if self.bank is None:
+    def forward(self, latest: torch.Tensor, update: bool = True, stream_id: str = "default") -> torch.Tensor:
+        if latest.shape[0] != 1:
+            raise ValueError("Streaming memory requires batch size 1 and an explicit stream identity")
+        key = str(stream_id)
+        previous = self._stream_banks.get(key)
+        if previous is None:
             enriched = latest
         else:
-            enriched = torch.cat([self.bank.to(latest.device), latest], dim=1)
+            enriched = torch.cat([previous.to(latest.device), latest], dim=1)
 
         if update:
             with torch.no_grad():
-                if self.bank is None:
+                if previous is None:
                     new_bank = latest.detach()
                 else:
-                    new_bank = torch.cat([self.bank.to(latest.device), latest.detach()], dim=1)
-                self.bank = new_bank[:, -self.size:]
+                    new_bank = torch.cat([previous.to(latest.device), latest.detach()], dim=1)
+                new_bank = new_bank[:, -self.size:]
+                self._stream_banks[key] = new_bank
+                if key == "default":
+                    self.bank = new_bank
         return enriched
 
 
@@ -117,7 +124,12 @@ class TemporalEncoder(nn.Module):
         layer = nn.TransformerEncoderLayer(dim, heads, dim * 4, dropout=0.1, batch_first=True, norm_first=True)
         self.encoder = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
 
-    def forward(self, x: torch.Tensor, modulation: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        modulation: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         b, t = x.shape[:2]
         # Base causal upper-triangular mask
         mask = torch.triu(torch.full((t, t), float('-inf'), device=x.device), 1)
@@ -133,4 +145,4 @@ class TemporalEncoder(nn.Module):
             scale = 1.0 + 0.5 * (mod_full.unsqueeze(-1) - 0.5)
             x = x * scale
 
-        return self.encoder(x, mask=mask)
+        return self.encoder(x, mask=mask, src_key_padding_mask=padding_mask)

@@ -33,9 +33,11 @@ def test_fix_1_detector_called_once_per_frame():
         graph_dim=32,
         use_pretrained_backbone=False,
         use_semantic_detector=True,
+        detector_name="heuristic",
         node_visual_dim=0,
         temporal_layers=1,
         heads=2,
+        allow_component_fallbacks=True,
     )
     model = ARGUS(config=cfg)
 
@@ -130,7 +132,7 @@ def test_fix_4_scheduler_checkpoint_and_resume(tmp_path):
     torch.save(checkpoint, ckpt_path)
 
     # Load checkpoint into new optimizer and scheduler
-    loaded = torch.load(ckpt_path, weights_only=False)
+    loaded = torch.load(ckpt_path, weights_only=True)
     assert 'scheduler' in loaded, "Checkpoint missing 'scheduler' key"
 
     new_param = torch.nn.Parameter(torch.randn(2, 2))
@@ -169,7 +171,7 @@ def test_fix_6_raw_state_dict_checkpoint(tmp_path):
     torch.save(model.state_dict(), raw_path)
 
     # Test the loader logic from evaluate.py / infer.py
-    state = torch.load(raw_path, weights_only=False)
+    state = torch.load(raw_path, weights_only=True)
     state_dict = state['model'] if isinstance(state, dict) and 'model' in state else state
 
     eval_model = ARGUS(config=ARGUSConfig(image_size=64, dim=64, temporal_layers=1, heads=2))
@@ -199,9 +201,11 @@ def test_fix_8_node_attribution_gradients():
         graph_dim=32,
         use_pretrained_backbone=False,
         use_semantic_detector=True,
+        detector_name="heuristic",
         node_visual_dim=0,
         temporal_layers=1,
         heads=2,
+        allow_component_fallbacks=True,
     )
     model = ARGUS(config=cfg)
     engine = ExplainabilityEngine(model)
@@ -274,7 +278,7 @@ def test_fix_12_argus_output_type_hints():
 # ── BUG-13: Vectorized Fallback Semantic Tagging ──────────────────────────
 def test_fix_13_vectorized_semantic_tagging():
     """Verify vectorized _fallback_detect produces correct semantic classes."""
-    det = SemanticDetector(max_objects=6)
+    det = SemanticDetector(max_objects=6, model_name="heuristic")
     # Force fallback mode
     det.yolo = None
 

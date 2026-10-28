@@ -33,12 +33,14 @@ class ARGUSOutput:
     boxes: List[List[torch.Tensor]]
     saliency: Optional[List[List[torch.Tensor]]] = None
     node_importance: Optional[List[List[torch.Tensor]]] = None
+    valid_mask: Optional[torch.Tensor] = None
+    sequence_lengths: Optional[torch.Tensor] = None
 
 
 class ARGUS(nn.Module):
     def __init__(self, config: Optional[ARGUSConfig] = None):
         super().__init__()
-        self.cfg = config or ARGUSConfig()
+        self.cfg = (config or ARGUSConfig()).validate()
 
         # ── Module 1: Adaptive Frame Sampling Controller ─────────────────
         self.sampler = AdaptiveSampler(
@@ -51,7 +53,9 @@ class ARGUS(nn.Module):
             self.backbone = SpatialBackbone(
                 name=self.cfg.backbone_name,
                 out_dim=self.cfg.dim,
-                frozen=self.cfg.backbone_frozen
+                frozen=self.cfg.backbone_frozen,
+                pretrained=self.cfg.backbone_pretrained,
+                allow_fallback=self.cfg.allow_component_fallbacks,
             )
             self.patch_proj = None
         else:
@@ -67,14 +71,17 @@ class ARGUS(nn.Module):
         if self.cfg.use_semantic_detector:
             self.detector = SemanticDetector(
                 confidence=self.cfg.detector_confidence,
-                max_objects=self.cfg.max_objects
+                max_objects=self.cfg.max_objects,
+                model_name=self.cfg.detector_name,
+                allow_fallback=self.cfg.allow_component_fallbacks,
             )
             in_node_dim = 10  # 6 kinematic + 3 semantic one-hot + 1 conf
             edge_attr_dim = 7  # 4 kinematic + 3 relational (P2P, P2O, O2O)
             self.graph_builder = DynamicSceneGraphBuilder(
                 max_objects=self.cfg.max_objects,
                 detector=self.detector,
-                use_semantic=True
+                use_semantic=True,
+                tracking_iou_threshold=self.cfg.tracking_iou_threshold,
             )
         else:
             self.detector = None
@@ -82,7 +89,8 @@ class ARGUS(nn.Module):
             edge_attr_dim = 4  # 4 kinematic (dist, iou, rel_vel, persist)
             self.graph_builder = DynamicSceneGraphBuilder(
                 max_objects=self.cfg.max_objects,
-                use_semantic=False
+                use_semantic=False,
+                tracking_iou_threshold=self.cfg.tracking_iou_threshold,
             )
 
         # Optional RoI visual feature extractor for graph nodes
@@ -107,7 +115,8 @@ class ARGUS(nn.Module):
         # ── Module 5: Graph-Visual Cross-Attention Fusion ────────────────
         self.fusion = GraphVisualFusion(
             visual_dim=self.cfg.dim,
-            graph_dim=self.cfg.graph_dim
+            graph_dim=self.cfg.graph_dim,
+            heads=self.cfg.heads,
         )
 
         # ── Module 6: Graph-Guided Visual Token Pruning ──────────────────
@@ -131,6 +140,21 @@ class ARGUS(nn.Module):
             nn.Linear(self.cfg.dim // 2, 1),
             nn.Sigmoid()
         )
+
+    def component_metadata(self) -> dict:
+        backbone_impl = "patch_projection"
+        if self.backbone is not None:
+            backbone_impl = "timm" if self.backbone.use_timm else "native_convnext"
+        detector_impl = "grid"
+        if self.detector is not None:
+            detector_impl = "yolo" if self.detector.has_yolo else "heuristic"
+        return {
+            "backbone_implementation": backbone_impl,
+            "backbone_name": self.cfg.backbone_name if self.backbone is not None else None,
+            "backbone_pretrained_requested": self.cfg.backbone_pretrained,
+            "detector_implementation": detector_impl,
+            "detector_model": self.detector.model_name if self.detector is not None else None,
+        }
 
     def _encode_frame(self, frame: torch.Tensor, prev_boxes: Optional[torch.Tensor] = None):
         # 1. Visual Token Extraction
@@ -159,7 +183,10 @@ class ARGUS(nn.Module):
             frame, prev_boxes=prev_boxes, visual_features=vis_features,
             detection_result=det_result
         )
-        g_embed = self.edge_gat(nodes, edges, edge_attr)
+        if nodes.shape[0] == 0:
+            g_embed = torch.zeros((1, self.cfg.graph_dim), device=frame.device, dtype=patches.dtype)
+        else:
+            g_embed = self.edge_gat(nodes, edges, edge_attr)
 
         # 4. Graph-Visual Fusion
         fused = self.fusion(patches, g_embed)
@@ -177,8 +204,19 @@ class ARGUS(nn.Module):
         frame_token = pruned.mean(dim=1)
         return frame_token, boxes, topk_scores, g_embed
 
-    def forward(self, frames: torch.Tensor, stream: bool = False) -> ARGUSOutput:
+    def forward(
+        self,
+        frames: torch.Tensor,
+        stream: bool = False,
+        stream_id: str = "default",
+    ) -> ARGUSOutput:
+        if frames.ndim != 5 or frames.shape[2] != 3:
+            raise ValueError("frames must have shape (B, T, 3, H, W)")
         b, t = frames.shape[:2]
+        if b == 0 or t == 0:
+            raise ValueError("frames must contain at least one batch item and one frame")
+        if stream and b != 1:
+            raise ValueError("streaming inference requires batch size 1")
         selected_batches, raw_scores = self.sampler.select(frames)
 
         batch_tokens = []
@@ -209,6 +247,7 @@ class ARGUS(nn.Module):
             batch_node_imp.append(clip_node_imp)
 
         max_t = max(bt.shape[1] for bt in batch_tokens)
+        lengths = torch.tensor([bt.shape[1] for bt in batch_tokens], device=frames.device, dtype=torch.long)
         padded_tokens = []
         for bt in batch_tokens:
             if bt.shape[1] < max_t:
@@ -218,19 +257,31 @@ class ARGUS(nn.Module):
                 padded = bt
             padded_tokens.append(padded)
         batch_tokens_t = torch.cat(padded_tokens, dim=0)
+        valid_mask = torch.arange(max_t, device=frames.device).unsqueeze(0) < lengths.unsqueeze(1)
 
         # Dynamic Attention Modulation from spatial velocity & temporal entropy
         mod_weights = self.sampler.compute_attention_modulation(raw_scores, selected_batches, max_t)
 
-        enriched = self.memory(batch_tokens_t, update=stream)
-        encoded = self.temporal_encoder(enriched, modulation=mod_weights)
+        if stream:
+            enriched = self.memory(batch_tokens_t, update=True, stream_id=stream_id)
+            encoded = self.temporal_encoder(enriched, modulation=mod_weights)
+        else:
+            enriched = batch_tokens_t
+            encoded = self.temporal_encoder(
+                enriched,
+                modulation=mod_weights,
+                padding_mask=~valid_mask,
+            )
         current_encoded = encoded[:, -max_t:]
         pred_scores = self.head(current_encoded).squeeze(-1)
+        pred_scores = pred_scores.masked_fill(~valid_mask, 0.0)
 
         return ARGUSOutput(
             scores=pred_scores,
             sampled_indices=selected_batches,
             boxes=batch_boxes,
             saliency=batch_saliencies,
-            node_importance=batch_node_imp
+            node_importance=batch_node_imp,
+            valid_mask=valid_mask,
+            sequence_lengths=lengths,
         )
