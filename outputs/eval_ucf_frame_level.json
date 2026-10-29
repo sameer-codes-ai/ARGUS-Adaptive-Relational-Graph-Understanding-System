@@ -1,0 +1,51 @@
+{
+  "protocol": "UCF-Crime Official Frame-Level Sliding Window (Sultani et al. CVPR 2018)",
+  "checkpoint": "outputs\\checkpoints_rlvd_full\\best.pt",
+  "sliding_window": {
+    "clip_len": 16,
+    "stride": 16,
+    "aggregation": "mean",
+    "streaming": false
+  },
+  "metrics": {
+    "frame_roc_auc": 0.092,
+    "frame_pr_auc": 0.0117,
+    "eer": 0.9532,
+    "eer_threshold": 0.8985,
+    "false_alarm_rate_tau_050": 1.0,
+    "false_alarm_rate_tau_eer": 1.0,
+    "accuracy_tau_050": 0.0894,
+    "precision_tau_050": 0.0203,
+    "recall_tau_050": 1.0,
+    "f1_score_tau_050": 0.0397
+  },
+  "confusion_matrix_tau_050": {
+    "tp": 8,
+    "fp": 387,
+    "fn": 0,
+    "tn": 30
+  },
+  "performance": {
+    "total_videos_evaluated": 2,
+    "total_frames_evaluated": 425,
+    "elapsed_seconds": 14.88,
+    "effective_fps": 28.56,
+    "latency_ms_per_frame": 35.01
+  },
+  "category_breakdown": {
+    "Abuse": {
+      "total_frames": 142,
+      "anomaly_frames": 8,
+      "mean_anomaly_score": 0.732,
+      "max_anomaly_score": 0.9999,
+      "roc_auc": 0.2864
+    },
+    "Normal": {
+      "total_frames": 283,
+      "anomaly_frames": 0,
+      "mean_anomaly_score": 0.9965,
+      "max_anomaly_score": 0.9993,
+      "roc_auc": "N/A (single class)"
+    }
+  }
+}

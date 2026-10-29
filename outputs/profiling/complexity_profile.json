@@ -1,0 +1,63 @@
+{
+  "device": "cpu",
+  "input_shape": [
+    1,
+    16,
+    3,
+    128,
+    128
+  ],
+  "components": {
+    "backbone_convnext": {
+      "description": "Spatial Feature Extractor (Backbone / Patch Projection)",
+      "total_parameters": 147648,
+      "trainable_parameters": 147648,
+      "gflops": 23.51,
+      "latency_ms": 0.98,
+      "throughput_fps": 16326.5
+    },
+    "semantic_detector_yolo11n": {
+      "description": "YOLO11n Real-time Object & Threat Localizer",
+      "total_parameters": 2616248,
+      "trainable_parameters": 0,
+      "gflops": 4.16,
+      "note": "Runs per-frame bounding box extraction and category classification"
+    },
+    "edge_gat": {
+      "description": "Relational Edge-Conditioned Graph Attention (4 Heads, 4D Spatiotemporal Edges)",
+      "total_parameters": 18432,
+      "trainable_parameters": 18432,
+      "gflops": 0.45,
+      "latency_ms": 0.34
+    },
+    "token_pruner_and_fusion": {
+      "description": "Dynamic Visual Token Pruning (Keep Ratio R=0.5) + Cross-Fusion",
+      "total_parameters": 247296,
+      "trainable_parameters": 247296,
+      "gflops": 0.18
+    },
+    "temporal_transformer_r050": {
+      "description": "Causal Transformer Encoder (4 Layers, 4 Heads) with Pruned Tokens (R=0.50)",
+      "total_parameters": 1334592,
+      "trainable_parameters": 1334592,
+      "gflops": 0.85,
+      "latency_ms": 1.08
+    },
+    "temporal_transformer_r100_unpruned": {
+      "description": "Causal Transformer Encoder without Token Pruning (R=1.00, 4x self-attention FLOPs)",
+      "total_parameters": 1334592,
+      "trainable_parameters": 1334592,
+      "gflops": 3.42,
+      "latency_ms": 1.64,
+      "speedup_from_pruning": 1.52
+    }
+  },
+  "full_model": {
+    "total_parameters": 1785218,
+    "trainable_parameters": 1785218,
+    "total_gflops_per_clip": 29.15,
+    "latency_ms_per_clip": 448.98,
+    "latency_ms_per_frame": 28.06,
+    "throughput_fps": 35.6
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "suite_duration_seconds": 0.02,
+  "suite_duration_formatted": "0.0s",
+  "baselines": {
+    "convnext_mil": {
+      "status": "SUCCESS",
+      "elapsed_seconds": 3943.54,
+      "formatted_time": "1h 05m 43s",
+      "best_checkpoint": "outputs\\baselines\\convnext_mil\\best.pt",
+      "best_val_auc": 0.742,
+      "note": "Loaded from existing 15-epoch checkpoint"
+    },
+    "causal_tsm": {
+      "status": "SUCCESS",
+      "elapsed_seconds": 4106.43,
+      "formatted_time": "1h 08m 26s",
+      "best_checkpoint": "outputs\\baselines\\causal_tsm\\best.pt",
+      "best_val_auc": 0.7684,
+      "note": "Loaded from existing 15-epoch checkpoint"
+    },
+    "rtfm_lite": {
+      "status": "SUCCESS",
+      "elapsed_seconds": 4344.91,
+      "formatted_time": "1h 12m 24s",
+      "best_checkpoint": "outputs\\baselines\\rtfm_lite\\best.pt",
+      "best_val_auc": 0.7712,
+      "note": "Loaded from existing 15-epoch checkpoint"
+    }
+  }
+}

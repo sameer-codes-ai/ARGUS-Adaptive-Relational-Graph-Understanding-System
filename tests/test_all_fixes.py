@@ -292,3 +292,76 @@ def test_fix_13_vectorized_semantic_tagging():
     assert (res.semantic_types >= 0).all() and (res.semantic_types <= 4).all()
     # Honest fallback: never fake weapon (3) or bag (2)
     assert not ((res.semantic_types == 2) | (res.semantic_types == 3)).any()
+
+
+# ── BUG-14: train.py Accepts --device CLI Argument ────────────────────────
+def test_fix_14_train_accepts_device_flag(monkeypatch):
+    """Verify train.parse_args() accepts --device cpu/cuda forwarded by runner scripts."""
+    import sys
+    import train
+    monkeypatch.setattr(sys, "argv", ["train.py", "--synthetic", "--device", "cpu"])
+    args = train.parse_args()
+    assert args.device == "cpu"
+    cfg = train.load_config(args)
+    assert cfg["device"] == "cpu"
+
+
+# ── BUG-15: profile_complexity Optional Import & EdgeGAT in_dim ───────────
+def test_fix_15_profile_complexity_hints_and_edge_gat_in_dim():
+    """Verify count_parameters type hints resolve and EdgeGAT stores in_dim."""
+    import typing
+    from scripts.profile_complexity import count_parameters
+    from argus.graph import EdgeGAT
+
+    hints = typing.get_type_hints(count_parameters)
+    assert "module" in hints
+    gat = EdgeGAT(in_dim=12, edge_dim=10, out_dim=64, heads=4)
+    assert gat.in_dim == 12
+    assert gat.edge_dim == 10
+    assert gat.out_dim == 64
+
+
+# ── BUG-16: Default Checkpoints Exist in infer.py and web_demo.py ─────────
+def test_fix_16_default_checkpoints_point_to_existing_champion(monkeypatch):
+    """Verify infer.py defaults to outputs/checkpoints_rlvd_full/best.pt."""
+    import sys
+    import infer
+    monkeypatch.setattr(sys, "argv", ["infer.py", "--input", "dummy.mp4"])
+    args = infer.parse_args()
+    assert args.checkpoint == Path("outputs/checkpoints_rlvd_full/best.pt")
+
+
+# ── BUG-17: Execution Order CLI Compatibility ─────────────────────────────
+def test_fix_17_execution_order_cli_compatibility(monkeypatch):
+    """Verify evaluate.py, prepare_manifests.py, and evaluate_frame_auc.py support Execution Order flags."""
+    import sys
+    import evaluate
+    from scripts import prepare_manifests, evaluate_frame_auc
+
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", "--checkpoint", "dummy.pt", "--synthetic", "--device", "cpu"])
+    eval_args = evaluate.parse_args()
+    assert eval_args.device == "cpu"
+
+    monkeypatch.setattr(sys, "argv", ["prepare_manifests.py", "--split-by", "source_video", "--output-dir", "data"])
+    pm_args = prepare_manifests.parse_args()
+    assert pm_args.split_by == "source_video"
+
+    monkeypatch.setattr(sys, "argv", ["evaluate_frame_auc.py", "--config", "configs/ablations/ablation_4_no_pruning.yaml"])
+    auc_args = evaluate_frame_auc.parse_args()
+    assert auc_args.config == Path("configs/ablations/ablation_4_no_pruning.yaml")
+
+
+# ── BUG-18: Multi-Seed UCF Metric Schema Extraction ───────────────────────
+def test_fix_18_multi_seed_nested_ucf_metrics():
+    """Verify run_multi_seed._extract_ucf_metric supports both nested 'metrics' and top-level keys."""
+    from scripts.run_multi_seed import _extract_ucf_metric, parse_args
+
+    nested = {"metrics": {"frame_roc_auc": 0.7123, "frame_pr_auc": 0.4567}}
+    flat = {"frame_roc_auc": 0.7123, "frame_pr_auc": 0.4567}
+    assert _extract_ucf_metric(nested, "frame_roc_auc") == 0.7123
+    assert _extract_ucf_metric(flat, "frame_pr_auc") == 0.4567
+
+    ms_args = parse_args([])
+    assert ms_args.device is None
+
+

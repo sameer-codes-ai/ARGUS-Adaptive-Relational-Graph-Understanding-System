@@ -5,7 +5,16 @@ import os
 from pathlib import Path
 import random
 import shutil
+import sys
 import time
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+TEST_DEPS = PROJECT_ROOT / ".testdeps"
+if TEST_DEPS.is_dir() and str(TEST_DEPS) not in sys.path:
+    sys.path.insert(0, str(TEST_DEPS))
+
 import yaml
 import numpy as np
 import torch
@@ -15,7 +24,8 @@ from tqdm import tqdm
 from argus import ARGUS
 from argus.config import ARGUSConfig
 from argus.data import VideoManifest, SyntheticSurveillance
-from argus.losses import anomaly_loss
+from argus.losses import anomaly_loss, compute_model_loss
+from argus.baselines import build_model
 from argus.metrics import binary_metrics
 from argus.checkpoint import (
     load_checkpoint,
@@ -77,6 +87,7 @@ def safe_torch_save(obj, target_path: Path, max_retries: int = 5, retry_delay: f
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train ARGUS Anomaly & Aggression Detection Model.")
+    parser.add_argument('--model-type', type=str, choices=['argus', 'convnext_mil', 'causal_tsm', 'rtfm_lite'], default='argus', help='Model architecture to train.')
     parser.add_argument('--config', type=Path, default=Path('configs/train.yaml'), help='Path to YAML config file.')
     parser.add_argument('--manifest', type=str, help='Path to training manifest CSV.')
     parser.add_argument('--val-manifest', type=str, help='Path to validation manifest CSV.')
@@ -101,6 +112,10 @@ def parse_args():
     parser.add_argument('--workers', type=int, default=None, help='Data loader worker processes.')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducible training.')
     parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow trusted legacy pickle checkpoints that fail safe loading.')
+    parser.add_argument('--eco-mode', action='store_true', help='Multi-tasking eco-mode: limits CPU threads, sets BelowNormal priority, and caps VRAM.')
+    parser.add_argument('--cpu-threads', type=int, default=None, help='Limit PyTorch CPU threads (e.g. 4 on Ryzen 7 7840HS).')
+    parser.add_argument('--max-vram-fraction', type=float, default=None, help='Cap PyTorch CUDA VRAM allocation fraction (e.g. 0.65 for 6GB RTX 3050).')
+    parser.add_argument('--device', type=str, default=None, choices=['cpu', 'cuda'], help='Compute device override (cpu or cuda).')
     return parser.parse_args()
 
 
@@ -117,6 +132,7 @@ def load_config(args) -> dict:
     train_cfg = config.get('training', {})
 
     # CLI overrides
+    model_type = args.model_type or train_cfg.get('model_type', 'argus')
     manifest = args.manifest or data_cfg.get('train_manifest')
     val_manifest = args.val_manifest or data_cfg.get('val_manifest')
     frames = args.frames if args.frames is not None else data_cfg.get('frames', 16)
@@ -136,7 +152,12 @@ def load_config(args) -> dict:
     reset_epoch = args.reset_epoch or train_cfg.get('reset_epoch', False)
     output_dir = args.output_dir or Path(train_cfg.get('output_dir', 'outputs/checkpoints'))
 
+    eco_mode = args.eco_mode or train_cfg.get('eco_mode', False)
+    cpu_threads = args.cpu_threads if args.cpu_threads is not None else train_cfg.get('cpu_threads', 4 if eco_mode else None)
+    max_vram_fraction = args.max_vram_fraction if args.max_vram_fraction is not None else train_cfg.get('max_vram_fraction', 0.65 if eco_mode else None)
+
     return {
+        'model_type': model_type,
         'manifest': manifest,
         'val_manifest': val_manifest,
         'resume': args.resume,
@@ -163,6 +184,10 @@ def load_config(args) -> dict:
         'seed': args.seed if args.seed is not None else train_cfg.get('seed', 42),
         'allow_unsafe_checkpoint': args.allow_unsafe_checkpoint,
         'model_cfg': model_cfg,
+        'eco_mode': eco_mode,
+        'cpu_threads': cpu_threads,
+        'max_vram_fraction': max_vram_fraction,
+        'device': args.device or train_cfg.get('device', None),
     }
 
 
@@ -183,7 +208,7 @@ def create_loader(manifest_path, synthetic, frames, image_size, batch_size, shuf
     )
 
 
-def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None, scaler=None, use_amp=False):
+def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None, scaler=None, use_amp=False, model_type='argus'):
     model.train()
     total_loss, all_preds, all_labels = 0.0, [], []
     batch_count = 0
@@ -203,12 +228,11 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
         frames, y = frames.to(device), y.to(device)
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             out = model(frames)
-        loss, loss_dict = anomaly_loss(
-            out.scores.float(), y,
+        loss, loss_dict = compute_model_loss(
+            model_type, out, y, model=model,
             smoothness_weight=smoothness_w,
             sparsity_weight=sparsity_w,
             mil_weight=mil_w,
-            valid_mask=out.valid_mask,
         )
 
         optimizer.zero_grad()
@@ -257,7 +281,7 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
 
 
 @torch.no_grad()
-def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None, use_amp=False):
+def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, epoch_idx, total_epochs, max_batches=None, use_amp=False, model_type='argus'):
     model.eval()
     total_loss, all_preds, all_labels = 0.0, [], []
     batch_count = 0
@@ -277,12 +301,11 @@ def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, e
         frames, y = frames.to(device), y.to(device)
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             out = model(frames)
-        loss, _ = anomaly_loss(
-            out.scores.float(), y,
+        loss, _ = compute_model_loss(
+            model_type, out, y, model=model,
             smoothness_weight=smoothness_w,
             sparsity_weight=sparsity_w,
             mil_weight=mil_w,
-            valid_mask=out.valid_mask,
         )
 
         total_loss += loss.item()
@@ -328,14 +351,50 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg['seed'])
 
+    if cfg.get('eco_mode') or cfg.get('cpu_threads') or cfg.get('max_vram_fraction'):
+        threads_to_use = cfg.get('cpu_threads') or 4
+        torch.set_num_threads(threads_to_use)
+        torch.set_num_interop_threads(max(1, threads_to_use // 2))
+
+        priority_status = 'Default'
+        try:
+            import psutil
+            p = psutil.Process()
+            if sys.platform == 'win32':
+                p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+            else:
+                p.nice(10)
+            priority_status = 'BelowNormal (Desktop Responsive)'
+        except Exception:
+            pass
+
+        vram_status = 'N/A'
+        if torch.cuda.is_available() and cfg.get('max_vram_fraction'):
+            try:
+                frac = float(cfg['max_vram_fraction'])
+                torch.cuda.set_per_process_memory_fraction(frac)
+                vram_status = f'Capped at {frac*100:.0f}% (leaves ~{(1.0-frac)*100:.0f}% for OS/Browsers)'
+            except Exception as e:
+                vram_status = f'Error setting fraction ({e})'
+
+        print(f'[ECO-MODE] Active | CPU Threads: {threads_to_use} | Priority: {priority_status} | VRAM: {vram_status}')
+
     if not cfg['synthetic'] and not cfg['manifest']:
         raise ValueError("Either --synthetic or a valid --manifest / config train_manifest is required.")
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    requested_device = cfg.get('device')
+    if requested_device == 'cuda' and not torch.cuda.is_available():
+        print("[WARNING] CUDA requested via --device cuda, but CUDA is not available. Falling back to CPU.")
+        device = 'cpu'
+    elif requested_device in ('cpu', 'cuda'):
+        device = requested_device
+    else:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using compute device: {device.upper()}")
 
     start_epoch = 1
     best_score = -1.0
+    best_loss = float("inf")
     checkpoint_data = None
 
     if cfg['resume']:
@@ -366,7 +425,7 @@ def main():
         model_config = ARGUSConfig.from_dict(cfg['model_cfg'], strict=True)
         model_config.image_size = cfg['image_size']
 
-    model = ARGUS(config=model_config).to(device)
+    model = build_model(model_type=cfg['model_type'], config=model_config).to(device)
     if checkpoint_data is not None:
         validate_component_metadata(checkpoint_data, model)
 
@@ -405,9 +464,13 @@ def main():
             else:
                 start_epoch = ckpt_epoch + 1
             prev_metrics = checkpoint_data.get('val_metrics') or checkpoint_data.get('train_metrics')
-            if prev_metrics and 'f1' in prev_metrics:
+            if prev_metrics and 'auc_roc' in prev_metrics:
+                best_score = checkpoint_data.get('best_score', prev_metrics['auc_roc'])
+            elif prev_metrics and 'f1' in prev_metrics:
                 best_score = checkpoint_data.get('best_score', prev_metrics['f1'])
-            print(f"  [OK] Successfully loaded weights (Checkpoint Epoch: {ckpt_epoch} | Resuming as Epoch {start_epoch} | Best F1: {best_score:.4f})")
+            if 'val_loss' in checkpoint_data:
+                best_loss = checkpoint_data.get('val_loss', float('inf'))
+            print(f"  [OK] Successfully loaded weights (Checkpoint Epoch: {ckpt_epoch} | Resuming as Epoch {start_epoch} | Best Val AUC: {best_score:.4f})")
         else:
             model.load_state_dict(model_state_dict(checkpoint_data))
             print(f"  [OK] Successfully loaded model state dictionary.")
@@ -500,7 +563,8 @@ def main():
         train_loss, train_metrics = train_one_epoch(
             model, train_loader, optimizer, device,
             cfg['smoothness_weight'], cfg['sparsity_weight'], cfg['mil_weight'],
-            epoch, total_epochs, cfg['max_batches'], scaler=scaler, use_amp=use_amp
+            epoch, total_epochs, cfg['max_batches'], scaler=scaler, use_amp=use_amp,
+            model_type=cfg['model_type']
         )
         scheduler.step()
 
@@ -510,7 +574,8 @@ def main():
             val_loss, val_metrics = evaluate_epoch(
                 model, val_loader, device,
                 cfg['smoothness_weight'], cfg['sparsity_weight'], cfg['mil_weight'],
-                epoch, total_epochs, cfg['max_batches'], use_amp=use_amp
+                epoch, total_epochs, cfg['max_batches'], use_amp=use_amp,
+                model_type=cfg['model_type']
             )
 
         epoch_duration = time.perf_counter() - epoch_start
@@ -531,8 +596,21 @@ def main():
         status_line += f"  [{format_duration(epoch_duration)} / ETA: {format_duration(estimated_remaining_time)}]"
         print(status_line)
 
-        current_score = val_metrics['f1'] if val_metrics and not (val_metrics['f1'] != val_metrics['f1']) else train_metrics['f1']
-        is_best = current_score >= best_score
+        # Phase 1.2: Standardize Checkpoint Selection strictly on Validation ROC-AUC
+        if val_metrics and "auc_roc" in val_metrics and not np.isnan(val_metrics["auc_roc"]):
+            current_score = float(val_metrics["auc_roc"])
+            current_loss = float(val_loss)
+        else:
+            current_score = float(train_metrics["auc_roc"]) if "auc_roc" in train_metrics else 0.0
+            current_loss = float(train_loss)
+
+        # Strict improvement (> 1e-4) with validation loss as deterministic secondary tie-breaker
+        if current_score > best_score + 1e-4:
+            is_best = True
+        elif abs(current_score - best_score) <= 1e-4 and current_loss < best_loss:
+            is_best = True
+        else:
+            is_best = False
 
         checkpoint = {
             'epoch': epoch,
@@ -542,6 +620,8 @@ def main():
             'config': model_config.to_dict(),
             'train_metrics': train_metrics,
             'val_metrics': val_metrics,
+            'val_loss': val_loss,
+            'model_type': cfg['model_type'],
             'best_score': max(best_score, current_score),
             'format_version': 2,
             'semantic_schema_version': getattr(model_config, 'semantic_schema_version', 'threat5'),
@@ -551,8 +631,9 @@ def main():
         safe_torch_save(checkpoint, output_dir / 'latest.pt')
         if is_best:
             best_score = current_score
+            best_loss = current_loss
             safe_torch_save(checkpoint, output_dir / 'best.pt')
-            print(f"  [*] New best checkpoint saved! (Score: {best_score:.4f})")
+            print(f"  [*] New best checkpoint saved! (Val AUC: {best_score:.4f} | Val Loss: {best_loss:.4f})")
 
         new_entry = {
             'epoch': epoch,

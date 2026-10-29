@@ -18,10 +18,11 @@ import torch.nn.functional as F
 
 
 class AdaptiveSampler(nn.Module):
-    def __init__(self, threshold: float = 0.12, max_gap: int = 4):
+    def __init__(self, threshold: float = 0.12, max_gap: int = 4, uniform_sampling: bool = False):
         super().__init__()
         self.threshold = threshold
         self.max_gap = max_gap
+        self.uniform_sampling = uniform_sampling
 
     def importance_scores(self, frames: torch.Tensor) -> torch.Tensor:
         b, t = frames.shape[:2]
@@ -55,6 +56,10 @@ class AdaptiveSampler(nn.Module):
 
     def select(self, frames: torch.Tensor) -> Tuple[List[torch.Tensor], torch.Tensor]:
         b, t = frames.shape[:2]
+        if self.uniform_sampling:
+            selected_batches = [torch.arange(t, device=frames.device, dtype=torch.long) for _ in range(b)]
+            scores = torch.ones((b, t), device=frames.device, dtype=frames.dtype)
+            return selected_batches, scores
         scores = self.importance_scores(frames)
         selected_batches = []
         for i in range(b):
@@ -80,6 +85,8 @@ class AdaptiveSampler(nn.Module):
         based on spatial movement velocity and temporal entropy.
         """
         b = len(selected_batches)
+        if self.uniform_sampling:
+            return torch.ones((b, max_t), device=scores.device, dtype=scores.dtype)
         mod_weights = torch.zeros((b, max_t), device=scores.device, dtype=scores.dtype)
         for i in range(b):
             chosen = selected_batches[i]

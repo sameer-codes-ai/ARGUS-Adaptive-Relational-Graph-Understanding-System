@@ -923,7 +923,7 @@ def main():
     parser = argparse.ArgumentParser(description="Run ARGUS Live Web Demo.")
     parser.add_argument('--port', type=int, default=7860, help='Web server port (default: 7860).')
     parser.add_argument('--host', type=str, default='127.0.0.1', help='Server bind host (default: localhost only).')
-    parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints_joint/best.pt'), help='Model checkpoint.')
+    parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints_rlvd_full/best.pt'), help='Model checkpoint.')
     parser.add_argument('--allow-random-model', action='store_true', help='Explicitly allow untrained random weights for development.')
     parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow a trusted legacy pickle checkpoint.')
     args = parser.parse_args()

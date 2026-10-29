@@ -1,0 +1,46 @@
+{
+  "status": "SUCCESS",
+  "total_frames": 96,
+  "sampling_interval_frames": 20,
+  "device": "cpu",
+  "total_time_seconds": 3.15,
+  "average_fps": 30.5,
+  "initial_rss_mb": 231.88,
+  "peak_rss_mb": 239.5,
+  "min_rss_mb": 237.86,
+  "final_rss_mb": 239.31,
+  "net_drift_mb": 7.43,
+  "is_bounded_O1": true,
+  "samples": [
+    {
+      "frame": 32,
+      "process_rss_mb": 237.86,
+      "pytorch_allocated_mb": 0.0,
+      "delta_mb": 5.98
+    },
+    {
+      "frame": 48,
+      "process_rss_mb": 238.59,
+      "pytorch_allocated_mb": 0.0,
+      "delta_mb": 6.71
+    },
+    {
+      "frame": 64,
+      "process_rss_mb": 239.3,
+      "pytorch_allocated_mb": 0.0,
+      "delta_mb": 7.42
+    },
+    {
+      "frame": 80,
+      "process_rss_mb": 239.5,
+      "pytorch_allocated_mb": 0.0,
+      "delta_mb": 7.62
+    },
+    {
+      "frame": 96,
+      "process_rss_mb": 239.31,
+      "pytorch_allocated_mb": 0.0,
+      "delta_mb": 7.43
+    }
+  ]
+}

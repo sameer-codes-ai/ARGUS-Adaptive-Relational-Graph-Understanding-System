@@ -15,7 +15,7 @@ if not exist ".venv\Scripts\python.exe" (
 
 echo [*] Initializing ARGUS Platform at http://localhost:7860...
 start http://localhost:7860
-".venv\Scripts\python.exe" web_demo.py --port 7860 --host 127.0.0.1 --checkpoint outputs\checkpoints_joint\best.pt
+".venv\Scripts\python.exe" web_demo.py --port 7860 --host 127.0.0.1 --checkpoint outputs\checkpoints_rlvd_full\best.pt
 
 if errorlevel 1 (
     echo.

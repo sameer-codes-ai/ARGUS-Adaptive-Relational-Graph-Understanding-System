@@ -283,14 +283,23 @@ class EdgeGAT(nn.Module):
     """
     Edge-Conditioned Multi-Head Graph Attention Network.
     Fully vectorized with PyTorch scatter operations for fast training and inference.
+    Supports standard GAT mode without edge attributes (Ablation 2).
     """
-    def __init__(self, in_dim: int = 6, edge_dim: int = 4, out_dim: int = 128, heads: int = 4):
+    def __init__(self, in_dim: int = 6, edge_dim: int = 4, out_dim: int = 128, heads: int = 4, use_edge_attrs: bool = True):
         super().__init__()
+        self.in_dim = in_dim
+        self.edge_dim = edge_dim
+        self.out_dim = out_dim
         self.heads = heads
         self.head_dim = out_dim // heads
+        self.use_edge_attrs = use_edge_attrs
         self.proj = nn.Linear(in_dim, out_dim)
-        self.edge_proj = nn.Linear(edge_dim, out_dim)
-        self.attn = nn.Parameter(torch.randn(heads, self.head_dim * 2 + self.head_dim))
+        if self.use_edge_attrs:
+            self.edge_proj = nn.Linear(edge_dim, out_dim)
+            self.attn = nn.Parameter(torch.randn(heads, self.head_dim * 3))
+        else:
+            self.edge_proj = None
+            self.attn = nn.Parameter(torch.randn(heads, self.head_dim * 2))
         nn.init.xavier_uniform_(self.attn)
         self.out_proj = nn.Linear(out_dim, out_dim)
 
@@ -300,11 +309,17 @@ class EdgeGAT(nn.Module):
             return torch.zeros((0, self.heads * self.head_dim), device=x.device, dtype=x.dtype)
         h = self.proj(x).view(n, self.heads, self.head_dim)
         src, dst = edges
-        e_feat = self.edge_proj(edge_attr).view(-1, self.heads, self.head_dim)
 
         h_src = h[src]
         h_dst = h[dst]
-        combined = torch.cat([h_src, h_dst, e_feat], dim=-1)
+
+        if self.use_edge_attrs and self.edge_proj is not None and edge_attr is not None and edge_attr.numel() > 0:
+            e_feat = self.edge_proj(edge_attr).view(-1, self.heads, self.head_dim)
+            combined = torch.cat([h_src, h_dst, e_feat], dim=-1)
+        else:
+            e_feat = None
+            combined = torch.cat([h_src, h_dst], dim=-1)
+
         logits = (combined * self.attn.unsqueeze(0)).sum(dim=-1)
         logits = F.leaky_relu(logits, 0.2)
 
@@ -326,7 +341,10 @@ class EdgeGAT(nn.Module):
 
         alpha = (exp_logits / sum_exp[dst]).unsqueeze(-1)
 
-        msg = (h_src + e_feat) * alpha
+        if e_feat is not None:
+            msg = (h_src + e_feat) * alpha
+        else:
+            msg = h_src * alpha
         out = torch.zeros_like(h)
         out.scatter_add_(0, dst.unsqueeze(-1).unsqueeze(-1).expand_as(msg), msg)
 
