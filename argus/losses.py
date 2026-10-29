@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Tuple
+
 
 def mil_ranking_loss(normal_scores, abnormal_scores, margin=1.0):
     if len(normal_scores) == 0 or len(abnormal_scores) == 0:
@@ -8,6 +10,26 @@ def mil_ranking_loss(normal_scores, abnormal_scores, margin=1.0):
     max_normal = normal_scores.max(dim=1).values
     max_abnormal = abnormal_scores.max(dim=1).values
     loss = F.relu(margin - max_abnormal.mean() + max_normal.mean())
+    return loss
+
+
+def rtfm_magnitude_loss(normal_features: torch.Tensor, abnormal_features: torch.Tensor, margin: float = 1.0) -> torch.Tensor:
+    """
+    Feature magnitude margin loss for RTFM (Tian et al., ICCV 2021).
+    Enforces that maximum feature magnitude of abnormal snippets exceeds
+    maximum normal snippet magnitude by at least `margin`.
+    """
+    if len(normal_features) == 0 or len(abnormal_features) == 0:
+        device = normal_features.device if len(normal_features) > 0 else abnormal_features.device
+        return torch.tensor(0.0, device=device)
+
+    # Compute L2 norm of temporal feature vectors along channel dimension
+    norm_mag = torch.norm(normal_features, p=2, dim=-1)   # (B_norm, T)
+    abn_mag = torch.norm(abnormal_features, p=2, dim=-1) # (B_abn, T)
+
+    max_norm = norm_mag.max(dim=1).values
+    max_abn = abn_mag.max(dim=1).values
+    loss = F.relu(margin - max_abn.mean() + max_norm.mean())
     return loss
 
 
@@ -59,3 +81,63 @@ def anomaly_loss(
         'total': total.item()
     }
 
+
+def compute_model_loss(
+    model_type: str,
+    out,
+    targets: torch.Tensor,
+    model: Optional[nn.Module] = None,
+    smoothness_weight: float = 0.1,
+    sparsity_weight: float = 0.01,
+    mil_weight: float = 0.5,
+) -> Tuple[torch.Tensor, dict]:
+    """
+    Unified loss dispatcher tailored to each architecture's supervision paradigm:
+      - argus & convnext_mil: BCE + Smoothness + Sparsity + Top-k MIL Ranking
+      - causal_tsm: BCE + Temporal Smoothness
+      - rtfm_lite: BCE + Smoothness + Feature Magnitude Ranking Loss
+    """
+    mtype = model_type.lower().strip()
+
+    if mtype in {"causal_tsm", "tsm"}:
+        return anomaly_loss(
+            out.scores.float(),
+            targets,
+            smoothness_weight=smoothness_weight,
+            sparsity_weight=0.0,
+            mil_weight=0.0,
+            valid_mask=out.valid_mask,
+        )
+    elif mtype in {"rtfm_lite", "rtfm"}:
+        base_loss, ldict = anomaly_loss(
+            out.scores.float(),
+            targets,
+            smoothness_weight=smoothness_weight,
+            sparsity_weight=0.0,
+            mil_weight=0.0,
+            valid_mask=out.valid_mask,
+        )
+        temp_feats = getattr(model, "last_temporal_features", None)
+        if temp_feats is not None:
+            abn_mask = (targets == 1.0)
+            norm_mask = (targets == 0.0)
+            if abn_mask.any() and norm_mask.any() and mil_weight > 0.0:
+                norm_f = temp_feats[norm_mask]
+                abn_f = temp_feats[abn_mask]
+                mag_loss = rtfm_magnitude_loss(norm_f, abn_f, margin=1.0)
+            else:
+                mag_loss = torch.tensor(0.0, device=targets.device)
+            total = base_loss + mil_weight * mag_loss
+            ldict["mag_loss"] = mag_loss.item()
+            ldict["total"] = total.item()
+            return total, ldict
+        return base_loss, ldict
+    else:
+        return anomaly_loss(
+            out.scores.float(),
+            targets,
+            smoothness_weight=smoothness_weight,
+            sparsity_weight=sparsity_weight,
+            mil_weight=mil_weight,
+            valid_mask=out.valid_mask,
+        )

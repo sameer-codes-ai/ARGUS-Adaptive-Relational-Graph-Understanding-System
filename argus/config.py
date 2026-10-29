@@ -33,6 +33,11 @@ class ARGUSConfig:
     allow_component_fallbacks: bool = False
     backbone_pretrained: bool = True
     tracking_iou_threshold: float = 0.1
+    # ── Phase 3 Ablation Control Flags ──
+    use_graph: bool = True          # False disables scene graph & GAT (Ablation 1)
+    use_edge_attrs: bool = True     # False strips 10D edge attributes in EdgeGAT (Ablation 2)
+    uniform_sampling: bool = False  # True forces fixed uniform frame indexing (Ablation 5)
+    use_memory: bool = True         # False disables causal streaming FIFO memory (Ablation 6)
 
     def validate(self) -> 'ARGUSConfig':
         if self.semantic_schema_version not in {'threat5', 'legacy3'}:
@@ -49,8 +54,8 @@ class ARGUSConfig:
             raise ValueError("temporal_layers must be positive")
         if not 0.0 < self.keep_ratio <= 1.0:
             raise ValueError("keep_ratio must be in (0, 1]")
-        if self.memory_size <= 0:
-            raise ValueError("memory_size must be positive")
+        if self.memory_size < 0:
+            raise ValueError("memory_size cannot be negative")
         if self.max_objects <= 0 or self.max_frame_gap <= 0:
             raise ValueError("max_objects and max_frame_gap must be positive")
         if self.sampling_threshold < 0.0:
@@ -63,6 +68,14 @@ class ARGUSConfig:
             raise ValueError("node_visual_dim cannot be negative")
         if not 0.0 <= self.tracking_iou_threshold <= 1.0:
             raise ValueError("tracking_iou_threshold must be in [0, 1]")
+        if not isinstance(self.use_graph, bool):
+            raise ValueError("use_graph must be a boolean")
+        if not isinstance(self.use_edge_attrs, bool):
+            raise ValueError("use_edge_attrs must be a boolean")
+        if not isinstance(self.uniform_sampling, bool):
+            raise ValueError("uniform_sampling must be a boolean")
+        if not isinstance(self.use_memory, bool):
+            raise ValueError("use_memory must be a boolean")
         return self
 
     def to_dict(self) -> dict[str, Any]:

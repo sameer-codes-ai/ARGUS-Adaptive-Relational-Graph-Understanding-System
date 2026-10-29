@@ -34,7 +34,7 @@ def format_duration(seconds: float) -> str:
 def parse_args():
     parser = argparse.ArgumentParser(description="Run ARGUS inference on a video or frame directory.")
     parser.add_argument('--input', type=str, required=True, help='Path to video file (.mp4/.avi) or frame folder.')
-    parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints/best.pt'), help='Path to model checkpoint.')
+    parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints_rlvd_full/best.pt'), help='Path to model checkpoint.')
     parser.add_argument('--frames', type=int, default=16, help='Number of input frames to sample.')
     parser.add_argument('--image-size', type=int, default=None, help='Spatial resolution. Auto-detected from checkpoint if not specified.')
     parser.add_argument('--threshold', type=float, default=0.5, help='Anomaly classification decision threshold.')

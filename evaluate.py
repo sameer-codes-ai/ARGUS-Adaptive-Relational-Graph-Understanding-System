@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+TEST_DEPS = PROJECT_ROOT / ".testdeps"
+if TEST_DEPS.is_dir() and str(TEST_DEPS) not in sys.path:
+    sys.path.insert(0, str(TEST_DEPS))
+
 import argparse
 import json
 from pathlib import Path
@@ -7,6 +17,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from argus import ARGUS
+from argus.baselines import build_model
 from argus.config import ARGUSConfig
 from argus.data import VideoManifest, SyntheticSurveillance
 from argus.metrics import binary_metrics
@@ -38,11 +49,13 @@ def parse_args():
     parser.add_argument('--output-json', type=Path, default=None, help='Optional path to save metrics JSON.')
     parser.add_argument('--max-samples', type=int, default=None, help='Limit evaluation samples for fast testing.')
     parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow a trusted legacy pickle checkpoint.')
+    parser.add_argument('--device', type=str, default=None, choices=['cpu', 'cuda'], help='Compute device override (cpu or cuda).')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    yaml_model_cfg = {}
 
     if args.config and not args.config.exists():
         raise FileNotFoundError(f"Configuration file not found: {args.config}")
@@ -51,6 +64,7 @@ def main():
         with open(args.config, 'r', encoding='utf-8') as f:
             yaml_cfg = yaml.safe_load(f) or {}
         data_cfg = yaml_cfg.get('data', {})
+        yaml_model_cfg = yaml_cfg.get('model', {}) or {}
         if not args.manifest:
             args.manifest = data_cfg.get('test_manifest') or data_cfg.get('val_manifest')
 
@@ -61,7 +75,13 @@ def main():
     if args.max_samples is not None and args.max_samples <= 0:
         raise ValueError("max-samples must be positive when provided")
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        print("[WARNING] CUDA requested via --device cuda, but CUDA is not available. Falling back to CPU.")
+        device = 'cpu'
+    elif args.device in ('cpu', 'cuda'):
+        device = args.device
+    else:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Evaluation compute device: {device.upper()}")
 
     if not args.checkpoint.exists():
@@ -69,12 +89,15 @@ def main():
 
     state = load_checkpoint(args.checkpoint, map_location=device, allow_unsafe=args.allow_unsafe_checkpoint)
 
-    saved_cfg = state.get('config', {})
+    saved_cfg = dict(state.get('config', {}) or {}) if isinstance(state, dict) else {}
+    if yaml_model_cfg:
+        saved_cfg.update(yaml_model_cfg)
     config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
     if args.image_size is not None:
         config.image_size = args.image_size
 
-    model = ARGUS(config=config).to(device)
+    model_type = state.get('model_type') or state.get('components', {}).get('model_type', 'argus')
+    model = build_model(model_type=model_type, config=config).to(device)
     validate_component_metadata(state, model)
     model.load_state_dict(model_state_dict(state))
     model.eval()
