@@ -232,7 +232,7 @@ def evaluate_single_video(
     return np.clip(final_scores, 0.0, 1.0)
 
 
-def parse_args():
+def parse_args(args: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Official UCF-Crime Frame-Level AUC Evaluator for ARGUS.")
     parser.add_argument(
         "--checkpoint",
@@ -297,12 +297,17 @@ def parse_args():
         help="Compute device (cpu or cuda). Defaults to auto-detect.",
     )
     parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Allow evaluation on fewer than the complete 290 test videos (for smoke/debug tests only).",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
         help="Optional YAML config file to override model inference settings (e.g. for ablations).",
     )
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def main():
@@ -333,6 +338,16 @@ def main():
         anom_v = [v for v in valid_videos if gt_dict[v]["is_anomaly"]][:half]
         norm_v = [v for v in valid_videos if not gt_dict[v]["is_anomaly"]][: args.max_videos - len(anom_v)]
         valid_videos = anom_v + norm_v
+
+    EXPECTED_UCF_TEST_VIDEOS = 290
+    if args.max_videos is None and not args.allow_partial:
+        if len(valid_videos) < EXPECTED_UCF_TEST_VIDEOS:
+            raise ValueError(
+                f"Incomplete UCF-Crime test set: found {len(valid_videos)} valid videos with frames/tensors, "
+                f"expected {EXPECTED_UCF_TEST_VIDEOS}. For scientifically valid publication benchmarks, "
+                f"all {EXPECTED_UCF_TEST_VIDEOS} test videos must be evaluated. To run a debug/smoke test, "
+                "pass --allow-partial or --max-videos N."
+            )
 
     print(f"[INFO] Loaded ground truth for {len(valid_videos)} test videos with extracted frames.")
 
@@ -507,6 +522,8 @@ def main():
         },
         "performance": {
             "total_videos_evaluated": len(valid_videos),
+            "expected_total_videos": EXPECTED_UCF_TEST_VIDEOS,
+            "is_complete_benchmark": len(valid_videos) == EXPECTED_UCF_TEST_VIDEOS,
             "total_frames_evaluated": total_frames_processed,
             "elapsed_seconds": round(elapsed_time, 2),
             "effective_fps": round(fps, 2),

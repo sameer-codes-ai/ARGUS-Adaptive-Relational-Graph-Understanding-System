@@ -171,6 +171,8 @@ def profile_memory_stream(
     # Generate publication plot if matplotlib is available
     if output_plot and len(sampled_points) > 1:
         try:
+            import matplotlib
+            matplotlib.use("Agg")
             import matplotlib.pyplot as plt
 
             output_plot.parent.mkdir(parents=True, exist_ok=True)

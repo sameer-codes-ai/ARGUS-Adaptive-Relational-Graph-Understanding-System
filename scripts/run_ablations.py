@@ -9,10 +9,10 @@ Executes the 6 ablation variants defined in Plan.md:
   5. ablation_5_uniform_sampling: Fixed stride uniform frame selection (motion entropy disabled).
   6. ablation_6_no_causal_memory: Single-clip context, historical FIFO memory disabled (memory_size: 0).
 
-Supports:
-  - Full 15-epoch retraining from scratch across any/all variants
-  - Direct zero-shot evaluation (--eval-only) of the champion model under ablated inference conditions
-  - Consolidated JSON metrics output to outputs/ablations/ablation_summary.json
+Supports full retraining from scratch across any/all variants and writes a
+consolidated JSON report. An ablation is only valid when its weights were
+trained for its architecture; this runner deliberately refuses to evaluate a
+champion checkpoint under a different configuration.
 """
 
 from __future__ import annotations
@@ -114,13 +114,19 @@ def parse_args(args: list[str] | None = None):
     parser.add_argument(
         "--eval-only",
         action="store_true",
-        help="Run evaluation on test split without training.",
+        help="Deprecated and rejected: architecture-changing ablations must be trained.",
     )
     parser.add_argument(
         "--device",
         type=str,
         default=None,
         help="Compute device (cpu or cuda).",
+    )
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Max batches per epoch for quick verification.",
     )
     parser.add_argument(
         "--force-retrain",
@@ -141,6 +147,7 @@ def run_training_for_variant(
     eco_mode: bool = False,
     device: str | None = None,
     force_retrain: bool = False,
+    max_batches: int | None = None,
 ) -> dict:
     """Run training for a single ablation variant using train.py."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -183,7 +190,7 @@ def run_training_for_variant(
         "--batch-size", str(batch_size),
         "--lr", str(lr),
         "--output-dir", str(output_dir),
-    ] + (["--eco-mode"] if eco_mode else []) + (["--device", device] if device else [])
+    ] + (["--eco-mode"] if eco_mode else []) + (["--device", device] if device else []) + (["--max-batches", str(max_batches)] if max_batches else [])
 
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{TEST_DEPS};{PROJECT_ROOT}"
@@ -243,7 +250,8 @@ def evaluate_variant(
     if not checkpoint_path.is_file():
         return {"eval_status": "SKIPPED (Checkpoint not found)"}
 
-    eval_json = output_dir / f"eval_{variant}_test.json"
+    eval_json = output_dir / "eval_test_clean.json"
+    alt_eval_json = output_dir / f"eval_{variant}_test.json"
     python_exe = sys.executable
 
     cmd = [
@@ -267,6 +275,12 @@ def evaluate_variant(
         try:
             with open(eval_json, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # Also write alt copy for backwards compatibility
+            try:
+                with open(alt_eval_json, "w", encoding="utf-8") as f_alt:
+                    json.dump(data, f_alt, indent=2)
+            except Exception:
+                pass
             return {
                 "test_roc_auc": data.get("auc_roc"),
                 "test_ap": data.get("average_precision"),
@@ -282,6 +296,12 @@ def evaluate_variant(
 
 def main():
     args = parse_args()
+    if args.eval_only:
+        raise ValueError(
+            "--eval-only is not a valid scientific ablation: it changes an "
+            "architecture without training matching weights. Run the selected "
+            "variants with training instead."
+        )
     args.output_base.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
@@ -290,7 +310,7 @@ def main():
     print(f"Variants Selected: {', '.join(args.variants)}")
     print(f"Configs Dir:       {args.configs_dir}")
     print(f"Output Base:       {args.output_base}")
-    print(f"Mode:              {'EVAL-ONLY' if args.eval_only else f'TRAINING ({args.epochs} Epochs)'}")
+    print(f"Mode:              TRAINING ({args.epochs} Epochs)")
     print("=" * 70)
 
     summary_results: dict[str, dict] = {}
@@ -306,54 +326,30 @@ def main():
             summary_results[variant] = {"status": "CONFIG_NOT_FOUND"}
             continue
 
-        if args.eval_only:
-            # In eval-only mode, use existing ablation checkpoint or export ablated champion checkpoint
-            output_dir.mkdir(parents=True, exist_ok=True)
-            ckpt = output_dir / "best.pt"
-            if not ckpt.is_file() and args.champion_checkpoint.is_file():
-                try:
-                    import torch
-                    import yaml
-                    from argus.checkpoint import load_checkpoint
-                    state = load_checkpoint(args.champion_checkpoint, map_location="cpu", allow_unsafe=True)
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        yaml_cfg = yaml.safe_load(f) or {}
-                    if isinstance(state, dict) and isinstance(yaml_cfg.get("model"), dict):
-                        merged_cfg = dict(state.get("config", {}) or {})
-                        merged_cfg.update(yaml_cfg["model"])
-                        state["config"] = merged_cfg
-                        torch.save(state, ckpt)
-                except Exception:
-                    ckpt = args.champion_checkpoint
-            elif not ckpt.is_file():
-                ckpt = args.champion_checkpoint
-            eval_res = evaluate_variant(variant, ckpt, args.test_manifest, config_path, output_dir, device=args.device)
-            summary_results[variant] = {"eval_metrics": eval_res, "checkpoint_evaluated": str(ckpt)}
-        else:
-            # Training mode
-            train_res = run_training_for_variant(
-                variant=variant,
-                config_path=config_path,
-                output_dir=output_dir,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                lr=args.lr,
-                eco_mode=args.eco_mode,
+        train_res = run_training_for_variant(
+            variant=variant,
+            config_path=config_path,
+            output_dir=output_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            eco_mode=args.eco_mode,
+            device=args.device,
+            force_retrain=args.force_retrain,
+            max_batches=args.max_batches,
+        )
+        # Evaluate only the checkpoint produced by the matching training run.
+        if train_res.get("status") == "SUCCESS":
+            eval_res = evaluate_variant(
+                variant,
+                output_dir / "best.pt",
+                args.test_manifest,
+                config_path,
+                output_dir,
                 device=args.device,
-                force_retrain=args.force_retrain,
             )
-            # Evaluate after training
-            if train_res.get("status") == "SUCCESS":
-                eval_res = evaluate_variant(
-                    variant,
-                    output_dir / "best.pt",
-                    args.test_manifest,
-                    config_path,
-                    output_dir,
-                    device=args.device,
-                )
-                train_res["test_metrics"] = eval_res
-            summary_results[variant] = train_res
+            train_res["test_metrics"] = eval_res
+        summary_results[variant] = train_res
 
     total_duration = time.time() - total_start
 
