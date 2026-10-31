@@ -1,0 +1,30 @@
+{
+  "ARGUS Threat-5 (Champion)": {
+    "auc": 0.9818,
+    "fps": 35.6,
+    "gflops": 29.15,
+    "params_m": 31.8,
+    "memory_mb": 239.5
+  },
+  "ConvNeXt-Tiny + MIL": {
+    "auc": 0.6737,
+    "fps": 145.0,
+    "gflops": 23.51,
+    "params_m": 28.6,
+    "memory_mb": 115.0
+  },
+  "Causal TSM": {
+    "auc": 0.685,
+    "fps": 121.0,
+    "gflops": 24.1,
+    "params_m": 28.7,
+    "memory_mb": 120.0
+  },
+  "RTFM-Lite": {
+    "auc": 0.7429,
+    "fps": 118.0,
+    "gflops": 25.2,
+    "params_m": 29.1,
+    "memory_mb": 124.0
+  }
+}

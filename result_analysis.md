@@ -174,7 +174,7 @@ Evaluated across single 16-frame clip processing pipelines:
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **x86-64 Intel i7 (Reference CPU)** | FP32 | 32.1 ms | **31.2 FPS** | ~380 MB | Real-Time CPU |
 | **NVIDIA RTX 4090 (Server GPU)** | FP32 | 4.8 ms | **208.3 FPS** | ~1.2 GB | Multi-Stream Hub |
-| **NVIDIA Jetson Orin Nano (Edge)** | FP16 | 9.5 ms | **105.2 FPS** | ~450 MB | Real-Time Edge |
+| **NVIDIA Jetson Orin Nano (Edge - Projected)** | FP16 | 9.5 ms | **105.2 FPS** | ~450 MB | Real-Time Edge (Projected) |
 | **Raspberry Pi 5 (ARM CPU)** | INT8 | 78.4 ms | 12.8 FPS | ~210 MB | Near Real-Time |
 
 ---

@@ -80,7 +80,7 @@ def measure_time_to_alert(
 
     tta_frames_list = []
     tta_ms_list = []
-    early_alerts = 0  # Alerted before incident start
+    early_alerts = 0  # Videos with at least one pre-onset alert; never a detection.
     detected_count = 0
     missed_count = 0
     video_details = []
@@ -126,21 +126,24 @@ def measure_time_to_alert(
                 early_alerts += 1
 
             post_onset_alerts = [f for f in raw_alert_frames if f >= f_start_first]
-            if post_onset_alerts:
-                f_alert = post_onset_alerts[0]
-            else:
-                f_alert = raw_alert_frames[0]
+            if not post_onset_alerts:
+                # A threshold crossing before the annotated incident is a false
+                # alarm, not an early successful detection or zero latency.
+                missed_count += 1
+                video_details.append({
+                    "video": stem, "category": v_info["category"],
+                    "incident_start_frame": f_start_first, "alert_frame": None,
+                    "delta_frames": None, "tta_ms": None, "detected": False,
+                    "reason": "pre_onset_alert_only",
+                })
+                continue
 
+            f_alert = post_onset_alerts[0]
             delta_frames = f_alert - f_start_first
             tta_ms = round((delta_frames / 30.0) * 1000.0, 1)
-
             detected_count += 1
-
-            # Physical reaction latency from incident onset
-            reaction_frames = max(0, delta_frames)
-            reaction_ms = max(0.0, tta_ms)
-            tta_frames_list.append(reaction_frames)
-            tta_ms_list.append(reaction_ms)
+            tta_frames_list.append(delta_frames)
+            tta_ms_list.append(tta_ms)
 
             video_details.append(
                 {
@@ -151,6 +154,7 @@ def measure_time_to_alert(
                     "delta_frames": delta_frames,
                     "tta_ms": tta_ms,
                     "detected": True,
+                    "reason": "post_onset_alert",
                 }
             )
         else:
@@ -164,6 +168,7 @@ def measure_time_to_alert(
                     "delta_frames": None,
                     "tta_ms": None,
                     "detected": False,
+                    "reason": "no_alerts",
                 }
             )
 
