@@ -185,9 +185,19 @@ class ARGUS(nn.Module):
             "semantic_schema_version": self.cfg.semantic_schema_version,
         }
 
-    def _encode_frame(self, frame: torch.Tensor, prev_boxes: Optional[torch.Tensor] = None):
+    def _encode_frame(
+        self,
+        frame: torch.Tensor,
+        prev_boxes: Optional[torch.Tensor] = None,
+        precomputed_det: Optional[DetectionResult] = None,
+        precomputed_patches: Optional[torch.Tensor] = None,
+        precomputed_active_feat: Optional[torch.Tensor] = None,
+    ):
         # 1. Visual Token Extraction
-        if self.backbone is not None:
+        if precomputed_patches is not None:
+            patches = precomputed_patches
+            active_feat_map = precomputed_active_feat
+        elif self.backbone is not None:
             patches, feat_maps = self.backbone(frame)
             active_feat_map = feat_maps[self.backbone.token_stage_idx]
         else:
@@ -204,7 +214,10 @@ class ARGUS(nn.Module):
             return frame_token, empty_boxes, topk_scores, None, None, empty_edges, empty_edge_attr
 
         # 2. Run detection ONCE (shared between RoI and graph builder)
-        det_result = self.graph_builder.detector(frame)
+        if precomputed_det is not None:
+            det_result = precomputed_det
+        else:
+            det_result = self.graph_builder.detector(frame)
         if hasattr(det_result, 'boxes'):
             det_boxes = det_result.boxes
         else:
@@ -266,6 +279,36 @@ class ARGUS(nn.Module):
         batch_edge_indices = []
         batch_edge_attrs = []
 
+        # Batched detector & backbone pre-computation across all chosen frames in one pass
+        batch_detections: dict[tuple[int, int], DetectionResult] = {}
+        batch_backbones: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+        all_frames_list = []
+        frame_keys = []
+        for i in range(b):
+            for frame_idx in selected_batches[i]:
+                all_frames_list.append(frames[i, frame_idx])
+                frame_keys.append((i, int(frame_idx)))
+
+        if all_frames_list:
+            stacked_frames = torch.stack(all_frames_list, dim=0)
+
+            # 1. Batched ConvNeXt Backbone (Runs all frames simultaneously on GPU)
+            if self.backbone is not None:
+                all_visual_tokens, all_feat_maps = self.backbone(stacked_frames)
+                active_feat_map_all = all_feat_maps[self.backbone.token_stage_idx]
+                for idx, k in enumerate(frame_keys):
+                    batch_backbones[k] = (all_visual_tokens[idx:idx+1], active_feat_map_all[idx:idx+1])
+
+            # 2. Batched YOLO Detector (Runs all frames simultaneously on GPU)
+            if self.cfg.use_graph and self.graph_builder is not None and self.graph_builder.detector is not None:
+                if hasattr(self.graph_builder.detector, 'detect_batch'):
+                    all_dets = self.graph_builder.detector.detect_batch(stacked_frames)
+                else:
+                    all_dets = [self.graph_builder.detector(f) for f in all_frames_list]
+                for k, d in zip(frame_keys, all_dets):
+                    batch_detections[k] = d
+
         for i in range(b):
             chosen = selected_batches[i]
             prev_boxes = None
@@ -280,7 +323,18 @@ class ARGUS(nn.Module):
             clip_edge_attrs = []
 
             for frame_idx in chosen:
-                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(frames[i, frame_idx], prev_boxes)
+                k = (i, int(frame_idx))
+                det_cached = batch_detections.get(k)
+                bb_cached = batch_backbones.get(k)
+                pre_patches = bb_cached[0] if bb_cached is not None else None
+                pre_active = bb_cached[1] if bb_cached is not None else None
+                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(
+                    frames[i, frame_idx],
+                    prev_boxes,
+                    precomputed_det=det_cached,
+                    precomputed_patches=pre_patches,
+                    precomputed_active_feat=pre_active,
+                )
                 prev_boxes = boxes.detach()
                 clip_tokens.append(f_token)
                 clip_boxes.append(boxes)

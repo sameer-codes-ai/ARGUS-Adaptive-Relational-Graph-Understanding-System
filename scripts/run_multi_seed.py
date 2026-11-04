@@ -101,14 +101,46 @@ def run_multi_seed(
 
         # Check existing Seed 42 checkpoint from main training run
         existing_champion = PROJECT_ROOT / "outputs" / "checkpoints_rlvd_full" / "best.pt"
-        if seed == 42 and skip_seed_42_if_exists and existing_champion.exists() and not ckpt_path.exists():
-            print(f"[INFO] Using verified Seed 42 checkpoint: {existing_champion}")
-            import shutil
-            shutil.copy2(existing_champion, ckpt_path)
+        if seed == 42 and skip_seed_42_if_exists and existing_champion.exists():
+            if not ckpt_path.exists():
+                print(f"[INFO] Using verified Seed 42 checkpoint: {existing_champion}")
+                import shutil
+                shutil.copy2(existing_champion, ckpt_path)
+            champ_eval_in = PROJECT_ROOT / "outputs" / "checkpoints_rlvd_full" / "eval_test_clean.json"
+            champ_eval_ucf = PROJECT_ROOT / "outputs" / "checkpoints_rlvd_full" / "eval_ucf_frame_level.json"
+            if champ_eval_in.exists() and not (seed_dir / "eval_test_clean.json").exists():
+                import shutil
+                shutil.copy2(champ_eval_in, seed_dir / "eval_test_clean.json")
+            if champ_eval_ucf.exists() and not (seed_dir / "eval_ucf_frame_level.json").exists():
+                import shutil
+                shutil.copy2(champ_eval_ucf, seed_dir / "eval_ucf_frame_level.json")
 
-        # 1. Train if checkpoint does not exist
-        if not ckpt_path.exists():
-            print(f"\n--- Training Seed {seed} from Scratch ({epochs} Epochs) ---")
+        # 1. Train if checkpoint does not exist or has not completed target epochs
+        hist_file = seed_dir / "training_history.json"
+        is_completed = False
+        if ckpt_path.exists() and hist_file.exists():
+            try:
+                with open(hist_file, "r", encoding="utf-8") as f:
+                    h = json.load(f)
+                if isinstance(h, list) and len(h) >= epochs:
+                    is_completed = True
+            except Exception:
+                pass
+
+        if not is_completed:
+            latest_ckpt = seed_dir / "latest.pt"
+            resume_args = []
+            if latest_ckpt.is_file() and hist_file.is_file():
+                try:
+                    with open(hist_file, "r", encoding="utf-8") as f:
+                        h = json.load(f)
+                    if isinstance(h, list) and 0 < len(h) < epochs:
+                        resume_args = ["--resume", str(latest_ckpt)]
+                        print(f"  [*] Resuming Seed {seed} from epoch {len(h)} (target: {epochs})")
+                except Exception:
+                    pass
+
+            print(f"\n--- Training Seed {seed} ({epochs} Epochs) ---")
             train_cmd = [
                 sys.executable,
                 str(PROJECT_ROOT / "train.py"),
@@ -118,34 +150,40 @@ def run_multi_seed(
                 "--lr", str(lr),
                 "--seed", str(seed),
                 "--output-dir", str(seed_dir),
-            ] + (["--eco-mode"] if eco_mode else []) + (["--device", resolved_device] if resolved_device else [])
+            ] + resume_args + (["--eco-mode"] if eco_mode else []) + (["--device", resolved_device] if resolved_device else [])
             subprocess.run(train_cmd, env=env, check=True)
 
         # 2. In-Domain Evaluation on clean test set
-        print(f"\n[EVAL] Evaluating Seed {seed} on clean held-out test split...")
-        eval_in_cmd = [
-            sys.executable,
-            str(PROJECT_ROOT / "evaluate.py"),
-            "--checkpoint", str(ckpt_path),
-            "--manifest", str(PROJECT_ROOT / "data" / "test_clean.csv"),
-            "--output-json", str(seed_dir / "eval_test_clean.json"),
-            "--allow-unsafe-checkpoint",
-        ] + (["--device", resolved_device] if resolved_device else [])
-        subprocess.run(eval_in_cmd, env=env, check=True)
+        if not (seed_dir / "eval_test_clean.json").exists():
+            print(f"\n[EVAL] Evaluating Seed {seed} on clean held-out test split...")
+            eval_in_cmd = [
+                sys.executable,
+                str(PROJECT_ROOT / "evaluate.py"),
+                "--checkpoint", str(ckpt_path),
+                "--manifest", str(PROJECT_ROOT / "data" / "test_clean.csv"),
+                "--output-json", str(seed_dir / "eval_test_clean.json"),
+                "--allow-unsafe-checkpoint",
+            ] + (["--device", resolved_device] if resolved_device else [])
+            subprocess.run(eval_in_cmd, env=env, check=True)
+        else:
+            print(f"[INFO] Seed {seed} in-domain evaluation already present.")
 
         with open(seed_dir / "eval_test_clean.json") as f:
             in_metrics = json.load(f)
 
         # 3. Cross-Dataset Frame-Level Evaluation on UCF-Crime
-        print(f"\n[EVAL] Evaluating Seed {seed} on UCF-Crime frame-level (111k frames)...")
-        eval_ucf_cmd = [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "evaluate_frame_auc.py"),
-            "--checkpoint", str(ckpt_path),
-            "--output-json", str(seed_dir / "eval_ucf_frame_level.json"),
-            "--streaming",
-        ] + (["--device", resolved_device] if resolved_device else [])
-        subprocess.run(eval_ucf_cmd, env=env, check=True)
+        if not (seed_dir / "eval_ucf_frame_level.json").exists():
+            print(f"\n[EVAL] Evaluating Seed {seed} on UCF-Crime frame-level (111k frames)...")
+            eval_ucf_cmd = [
+                sys.executable,
+                str(PROJECT_ROOT / "scripts" / "evaluate_frame_auc.py"),
+                "--checkpoint", str(ckpt_path),
+                "--output-json", str(seed_dir / "eval_ucf_frame_level.json"),
+                "--streaming",
+            ] + (["--device", resolved_device] if resolved_device else [])
+            subprocess.run(eval_ucf_cmd, env=env, check=True)
+        else:
+            print(f"[INFO] Seed {seed} UCF-Crime frame-level evaluation already present.")
 
         with open(seed_dir / "eval_ucf_frame_level.json") as f:
             ucf_metrics = json.load(f)

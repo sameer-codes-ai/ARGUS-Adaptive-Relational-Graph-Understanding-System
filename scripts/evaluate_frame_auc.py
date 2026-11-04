@@ -319,6 +319,10 @@ def main():
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Compute Device:       {device.upper()}")
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     print(f"Model Checkpoint:     {args.checkpoint}")
     print(f"Annotation File:      {args.annotations}")
     print(f"Test Frames Directory:{args.test_dir}")

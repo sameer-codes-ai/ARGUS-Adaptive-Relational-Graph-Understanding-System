@@ -83,6 +83,10 @@ def main():
     else:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Evaluation compute device: {device.upper()}")
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")

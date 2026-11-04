@@ -225,7 +225,7 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
     epoch_start = time.perf_counter()
 
     for frames, y in dataloader:
-        frames, y = frames.to(device), y.to(device)
+        frames, y = frames.to(device, non_blocking=True), y.to(device, non_blocking=True)
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             out = model(frames)
         loss, loss_dict = compute_model_loss(
@@ -298,7 +298,7 @@ def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, e
     eval_start = time.perf_counter()
 
     for frames, y in dataloader:
-        frames, y = frames.to(device), y.to(device)
+        frames, y = frames.to(device, non_blocking=True), y.to(device, non_blocking=True)
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             out = model(frames)
         loss, _ = compute_model_loss(
@@ -350,6 +350,9 @@ def main():
     torch.manual_seed(cfg['seed'])
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg['seed'])
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     if cfg.get('eco_mode') or cfg.get('cpu_threads') or cfg.get('max_vram_fraction'):
         threads_to_use = cfg.get('cpu_threads') or 4
@@ -524,7 +527,15 @@ def main():
         cfg['batch_size'], shuffle=False, augment=False, workers=cfg['workers'], pin_memory=use_amp
     ) if (cfg['val_manifest'] or cfg['synthetic']) else None
 
-    total_epochs = start_epoch + cfg['epochs'] - 1
+    if hasattr(train_loader.dataset, 'preload_cache'):
+        train_loader.dataset.preload_cache()
+    if val_loader and hasattr(val_loader.dataset, 'preload_cache'):
+        val_loader.dataset.preload_cache()
+
+    if cfg['resume'] and not cfg['reset_epoch']:
+        total_epochs = cfg['epochs']
+    else:
+        total_epochs = start_epoch + cfg['epochs'] - 1
 
     print(f"Dataset: {len(train_loader.dataset)} train clips", end="")
     if val_loader:

@@ -1,0 +1,16 @@
+{
+  "accuracy": 0.9433,
+  "precision": 0.929,
+  "recall": 0.96,
+  "f1": 0.9443,
+  "auc_roc": 0.9888,
+  "average_precision": 0.9888,
+  "fps": 58.54,
+  "latency_ms_per_clip": 273.32,
+  "samples_evaluated": 300,
+  "total_time_s": 89.34,
+  "tp": 144,
+  "fp": 11,
+  "tn": 139,
+  "fn": 6
+}

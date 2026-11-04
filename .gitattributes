@@ -1,3 +1,4 @@
 outputs/checkpoints_rlvd_full/best.pt filter=lfs diff=lfs merge=lfs -text
 datasets/preprocessed_ucf_test/NormalVideos/Normal_Videos_924_x264.pt filter=lfs diff=lfs merge=lfs -text
 datasets/preprocessed_ucf_test/NormalVideos/Normal_Videos_935_x264.pt filter=lfs diff=lfs merge=lfs -text
+outputs/**/*.pt filter=lfs diff=lfs merge=lfs -text

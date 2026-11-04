@@ -335,7 +335,7 @@ class EdgeGAT(nn.Module):
 
         exp_logits = torch.exp(logits - max_logits[dst])
 
-        sum_exp = torch.zeros(n, self.heads, device=x.device, dtype=x.dtype)
+        sum_exp = torch.zeros(n, self.heads, device=x.device, dtype=exp_logits.dtype)
         sum_exp.scatter_add_(0, dst.unsqueeze(-1).expand_as(exp_logits), exp_logits)
         sum_exp = sum_exp.clamp(min=1e-8)
 
@@ -345,12 +345,12 @@ class EdgeGAT(nn.Module):
             msg = (h_src + e_feat) * alpha
         else:
             msg = h_src * alpha
-        out = torch.zeros_like(h)
-        out.scatter_add_(0, dst.unsqueeze(-1).unsqueeze(-1).expand_as(msg), msg)
+        out = torch.zeros(h.shape, device=h.device, dtype=h.dtype)
+        out.scatter_add_(0, dst.unsqueeze(-1).unsqueeze(-1).expand_as(msg), msg.to(h.dtype))
 
         # Self-loop for isolated nodes (no incoming edges)
-        incoming_count = torch.zeros(n, device=x.device)
-        incoming_count.scatter_add_(0, dst, torch.ones(num_edges, device=x.device))
+        incoming_count = torch.zeros(n, device=x.device, dtype=x.dtype)
+        incoming_count.scatter_add_(0, dst, torch.ones(num_edges, device=x.device, dtype=x.dtype))
         isolated = (incoming_count == 0)
         if isolated.any():
             out[isolated] = h[isolated]

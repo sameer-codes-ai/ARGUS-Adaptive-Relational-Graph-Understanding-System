@@ -1,0 +1,138 @@
+{
+  "phase": "Phase 3: Controlled Component Ablation Suite",
+  "total_variants_executed": 6,
+  "total_duration_seconds": 9666.95,
+  "total_duration_formatted": "2h 41m 06s",
+  "results": {
+    "ablation_1_no_graph": {
+      "status": "SUCCESS",
+      "duration_seconds": 6258.78,
+      "duration_formatted": "1h 44m 18s",
+      "best_checkpoint": "outputs\\ablations\\ablation_1_no_graph\\best.pt",
+      "best_metrics": {
+        "best_epoch": 13,
+        "val_auc_roc": 0.9514,
+        "val_ap": 0.9457,
+        "val_f1": 0.7243,
+        "val_loss": null
+      },
+      "note": "Loaded from existing 15-epoch checkpoint",
+      "test_metrics": {
+        "test_roc_auc": 0.9718,
+        "test_ap": 0.9734,
+        "test_f1": 0.792,
+        "test_accuracy": 0.8267,
+        "fps": 76.21,
+        "latency_ms": 209.94
+      }
+    },
+    "ablation_2_no_edge_attrs": {
+      "status": "SUCCESS",
+      "duration_seconds": 12521.61,
+      "duration_formatted": "3h 28m 41s",
+      "best_checkpoint": "outputs\\ablations\\ablation_2_no_edge_attrs\\best.pt",
+      "best_metrics": {
+        "best_epoch": 14,
+        "val_auc_roc": 0.9585,
+        "val_ap": 0.9557,
+        "val_f1": 0.8364,
+        "val_loss": null
+      },
+      "note": "Loaded from existing 15-epoch checkpoint",
+      "test_metrics": {
+        "test_roc_auc": 0.9809,
+        "test_ap": 0.9825,
+        "test_f1": 0.8782,
+        "test_accuracy": 0.89,
+        "fps": 56.96,
+        "latency_ms": 280.91
+      }
+    },
+    "ablation_3_no_roi_features": {
+      "status": "SUCCESS",
+      "duration_seconds": 10281.23,
+      "duration_formatted": "2h 51m 21s",
+      "best_checkpoint": "outputs\\ablations\\ablation_3_no_roi_features\\best.pt",
+      "best_metrics": {
+        "best_epoch": 14,
+        "val_auc_roc": 0.9637,
+        "val_ap": 0.9574,
+        "val_f1": 0.9068,
+        "val_loss": null
+      },
+      "note": "Loaded from existing 15-epoch checkpoint",
+      "test_metrics": {
+        "test_roc_auc": 0.9888,
+        "test_ap": 0.9888,
+        "test_f1": 0.9443,
+        "test_accuracy": 0.9433,
+        "fps": 58.54,
+        "latency_ms": 273.32
+      }
+    },
+    "ablation_4_no_pruning": {
+      "status": "SUCCESS",
+      "duration_seconds": 10684.58,
+      "duration_formatted": "2h 58m 04s",
+      "best_checkpoint": "outputs\\ablations\\ablation_4_no_pruning\\best.pt",
+      "best_metrics": {
+        "best_epoch": 13,
+        "val_auc_roc": 0.9646,
+        "val_ap": 0.9589,
+        "val_f1": 0.8671,
+        "val_loss": null
+      },
+      "note": "Loaded from existing 15-epoch checkpoint",
+      "test_metrics": {
+        "test_roc_auc": 0.9873,
+        "test_ap": 0.9886,
+        "test_f1": 0.9296,
+        "test_accuracy": 0.9333,
+        "fps": 59.73,
+        "latency_ms": 267.88
+      }
+    },
+    "ablation_5_uniform_sampling": {
+      "status": "SUCCESS",
+      "duration_seconds": 2992.06,
+      "duration_formatted": "49m 52s",
+      "best_checkpoint": "outputs\\ablations\\ablation_5_uniform_sampling\\best.pt",
+      "best_metrics": {
+        "best_epoch": 14,
+        "val_auc_roc": 0.9713,
+        "val_ap": 0.9658,
+        "val_f1": 0.9103,
+        "val_loss": null
+      },
+      "test_metrics": {
+        "test_roc_auc": 0.9861,
+        "test_ap": 0.987,
+        "test_f1": 0.9103,
+        "test_accuracy": 0.9067,
+        "fps": 70.61,
+        "latency_ms": 226.61
+      }
+    },
+    "ablation_6_no_causal_memory": {
+      "status": "SUCCESS",
+      "duration_seconds": 6203.8,
+      "duration_formatted": "1h 43m 23s",
+      "best_checkpoint": "outputs\\ablations\\ablation_6_no_causal_memory\\best.pt",
+      "best_metrics": {
+        "best_epoch": 11,
+        "val_auc_roc": 0.9662,
+        "val_ap": 0.9583,
+        "val_f1": 0.8997,
+        "val_loss": null
+      },
+      "test_metrics": {
+        "test_roc_auc": 0.9864,
+        "test_ap": 0.9873,
+        "test_f1": 0.9256,
+        "test_accuracy": 0.9233,
+        "fps": 13.68,
+        "latency_ms": 1169.6
+      }
+    }
+  }
+}

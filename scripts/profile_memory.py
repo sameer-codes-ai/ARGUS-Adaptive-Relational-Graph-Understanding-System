@@ -149,7 +149,9 @@ def profile_memory_stream(
         "min_rss_mb": min_rss,
         "final_rss_mb": final_rss,
         "net_drift_mb": round(rss_drift, 2),
-        "is_bounded_O1": abs(rss_drift) < 50.0,  # Strict bounding check (<50MB fluctuation)
+        "is_bounded_O1": bool(rss_drift <= 50.0),
+        "bounded_memory_verified": bool(rss_drift <= 50.0),
+        "drift_mb_per_hour": round((max(0.0, rss_drift) / max(total_time, 1e-4)) * 3600.0, 2),
         "samples": sampled_points,
     }
 

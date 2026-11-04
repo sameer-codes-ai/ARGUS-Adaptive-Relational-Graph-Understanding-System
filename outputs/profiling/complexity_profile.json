@@ -10,11 +10,11 @@
   "components": {
     "backbone_convnext": {
       "description": "Spatial Feature Extractor (Backbone / Patch Projection)",
-      "total_parameters": 147648,
-      "trainable_parameters": 147648,
+      "total_parameters": 27917920,
+      "trainable_parameters": 99328,
       "gflops": 23.51,
-      "latency_ms": 0.98,
-      "throughput_fps": 16326.5
+      "latency_ms": 265.65,
+      "throughput_fps": 60.2
     },
     "semantic_detector_yolo11n": {
       "description": "YOLO11n Real-time Object & Threat Localizer",
@@ -25,39 +25,39 @@
     },
     "edge_gat": {
       "description": "Relational Edge-Conditioned Graph Attention (4 Heads, 4D Spatiotemporal Edges)",
-      "total_parameters": 18432,
-      "trainable_parameters": 18432,
+      "total_parameters": 28160,
+      "trainable_parameters": 28160,
       "gflops": 0.45,
-      "latency_ms": 0.34
+      "latency_ms": 1.35
     },
     "token_pruner_and_fusion": {
       "description": "Dynamic Visual Token Pruning (Keep Ratio R=0.5) + Cross-Fusion",
-      "total_parameters": 247296,
-      "trainable_parameters": 247296,
+      "total_parameters": 428032,
+      "trainable_parameters": 428032,
       "gflops": 0.18
     },
     "temporal_transformer_r050": {
       "description": "Causal Transformer Encoder (4 Layers, 4 Heads) with Pruned Tokens (R=0.50)",
-      "total_parameters": 1334592,
-      "trainable_parameters": 1334592,
+      "total_parameters": 3159040,
+      "trainable_parameters": 3159040,
       "gflops": 0.85,
-      "latency_ms": 1.08
+      "latency_ms": 4.78
     },
     "temporal_transformer_r100_unpruned": {
       "description": "Causal Transformer Encoder without Token Pruning (R=1.00, 4x self-attention FLOPs)",
-      "total_parameters": 1334592,
-      "trainable_parameters": 1334592,
+      "total_parameters": 3159040,
+      "trainable_parameters": 3159040,
       "gflops": 3.42,
-      "latency_ms": 1.64,
-      "speedup_from_pruning": 1.52
+      "latency_ms": 4.76,
+      "speedup_from_pruning": 1.0
     }
   },
   "full_model": {
-    "total_parameters": 1785218,
-    "trainable_parameters": 1785218,
+    "total_parameters": 31623970,
+    "trainable_parameters": 3805378,
     "total_gflops_per_clip": 29.15,
-    "latency_ms_per_clip": 448.98,
-    "latency_ms_per_frame": 28.06,
-    "throughput_fps": 35.6
+    "latency_ms_per_clip": 919.73,
+    "latency_ms_per_frame": 57.48,
+    "throughput_fps": 17.4
   }
 }

@@ -195,6 +195,60 @@ class SemanticDetector(nn.Module):
         return self.yolo is not None
 
     @torch.no_grad()
+    def detect_batch(self, frames: torch.Tensor) -> list[DetectionResult]:
+        """
+        Batched detection across N frames in a single GPU pass.
+        Args:
+            frames: (N, 3, H, W) normalized [0, 1] tensor on device.
+        Returns:
+            list of N DetectionResult objects.
+        """
+        if frames.ndim == 3:
+            return [self.forward(frames)]
+        n, _, h, w = frames.shape
+        if n == 0:
+            return []
+        if self.yolo is not None:
+            img = frames.float().clamp(0.0, 1.0)
+            results = self.yolo(img, verbose=False, conf=self.confidence)
+            batch_results = []
+            for i in range(n):
+                res = results[i]
+                if len(res.boxes) == 0:
+                    batch_results.append(self._empty(frames.device))
+                    continue
+                det = res.boxes
+                boxes_px = det.xyxy.float()
+                scores = det.conf.float()
+                cids = det.cls.long()
+
+                boxes_norm = boxes_px.clone()
+                boxes_norm[:, [0, 2]] /= w
+                boxes_norm[:, [1, 3]] /= h
+
+                sem = torch.tensor(
+                    [_semantic_type(int(c)) for c in cids],
+                    device=frames.device,
+                    dtype=torch.long
+                )
+
+                if len(boxes_norm) > self.max_objects:
+                    topk = scores.topk(self.max_objects).indices
+                    boxes_norm, scores, cids, sem = (
+                        boxes_norm[topk], scores[topk], cids[topk], sem[topk]
+                    )
+
+                batch_results.append(DetectionResult(
+                    boxes=boxes_norm.to(frames.device),
+                    scores=scores.to(frames.device),
+                    class_ids=cids.to(frames.device),
+                    semantic_types=sem.to(frames.device),
+                    detector_impl="yolo",
+                ))
+            return batch_results
+        return [self._fallback_detect(frames[i], h, w) for i in range(n)]
+
+    @torch.no_grad()
     def forward(self, frame: torch.Tensor) -> DetectionResult:
         """
         Args:

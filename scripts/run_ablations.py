@@ -182,6 +182,18 @@ def run_training_for_variant(
 
     python_exe = sys.executable
 
+    latest_ckpt = output_dir / "latest.pt"
+    resume_args = []
+    if not force_retrain and latest_ckpt.is_file() and history_file.is_file():
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                existing_history = json.load(f)
+            if isinstance(existing_history, list) and 0 < len(existing_history) < epochs:
+                resume_args = ["--resume", str(latest_ckpt)]
+                print(f"  [*] Resuming {variant} from epoch {len(existing_history)} (target: {epochs} epochs)")
+        except Exception:
+            pass
+
     cmd = [
         python_exe,
         str(PROJECT_ROOT / "train.py"),
@@ -190,7 +202,7 @@ def run_training_for_variant(
         "--batch-size", str(batch_size),
         "--lr", str(lr),
         "--output-dir", str(output_dir),
-    ] + (["--eco-mode"] if eco_mode else []) + (["--device", device] if device else []) + (["--max-batches", str(max_batches)] if max_batches else [])
+    ] + resume_args + (["--eco-mode"] if eco_mode else []) + (["--device", device] if device else []) + (["--max-batches", str(max_batches)] if max_batches else [])
 
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{TEST_DEPS};{PROJECT_ROOT}"
@@ -252,6 +264,20 @@ def evaluate_variant(
 
     eval_json = output_dir / "eval_test_clean.json"
     alt_eval_json = output_dir / f"eval_{variant}_test.json"
+    if eval_json.is_file():
+        try:
+            with open(eval_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                "test_roc_auc": data.get("auc_roc"),
+                "test_ap": data.get("average_precision"),
+                "test_f1": data.get("f1"),
+                "test_accuracy": data.get("accuracy"),
+                "fps": data.get("fps"),
+                "latency_ms": data.get("latency_ms_per_clip"),
+            }
+        except Exception:
+            pass
     python_exe = sys.executable
 
     cmd = [
