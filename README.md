@@ -300,6 +300,7 @@ ARGUS includes a complete, publication-grade academic research documentation sui
 | **Ch. 8** | [`docs/08_result_analysis.md`](docs/08_result_analysis.md) / [`result_analysis.md`](result_analysis.md) | Comprehensive empirical evaluation, confusion matrix diagnostics, prior art comparison, and Pareto frontiers. |
 | **Ch. 9** | [`docs/09_system_architecture.md`](docs/09_system_architecture.md) | Production dual-layer topology, streaming inference CLI, alert dispatcher with hysteresis, and HTML dashboard. |
 | **Ch. 10** | [`docs/10_conclusion_and_future_work.md`](docs/10_conclusion_and_future_work.md) | Concluding synthesis, ethical considerations, privacy safeguards, limitations, and 5-year research roadmap. |
+| **Audit** | [`docs/feedback_implementation.md`](docs/feedback_implementation.md) | Authoritative Reviewer Feedback & Verification Report across all branches (`results`, `Pre-Main`, `main`). |
 
 ---
 
