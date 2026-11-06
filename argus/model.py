@@ -60,7 +60,8 @@ class ARGUS(nn.Module):
         # ── Module 1: Adaptive Frame Sampling Controller ─────────────────
         self.sampler = AdaptiveSampler(
             threshold=self.cfg.sampling_threshold,
-            max_gap=self.cfg.max_frame_gap
+            max_gap=self.cfg.max_frame_gap,
+            uniform_sampling=self.cfg.uniform_sampling,
         )
 
         # ── Module 2: Spatial Feature Backbone ───────────────────────────
@@ -83,63 +84,71 @@ class ARGUS(nn.Module):
             )
 
         # ── Module 3: Semantic Scene Graph Construction ─────────────────
-        if self.cfg.use_semantic_detector:
-            self.detector = SemanticDetector(
-                confidence=self.cfg.detector_confidence,
-                max_objects=self.cfg.max_objects,
-                model_name=self.cfg.detector_name,
-                allow_fallback=self.cfg.allow_component_fallbacks,
-            )
-            if self.cfg.semantic_schema_version == "threat5":
-                in_node_dim = SEMANTIC_NODE_DIM  # 12: 6 kinematics + 5 semantic one-hot + 1 conf
-                edge_attr_dim = THREAT_RELATIONAL_EDGE_DIM  # 10: 4 kinematic + 3 broad + 3 threat-aware
+        if self.cfg.use_graph:
+            if self.cfg.use_semantic_detector:
+                self.detector = SemanticDetector(
+                    confidence=self.cfg.detector_confidence,
+                    max_objects=self.cfg.max_objects,
+                    model_name=self.cfg.detector_name,
+                    allow_fallback=self.cfg.allow_component_fallbacks,
+                )
+                if self.cfg.semantic_schema_version == "threat5":
+                    in_node_dim = SEMANTIC_NODE_DIM  # 12: 6 kinematics + 5 semantic one-hot + 1 conf
+                    edge_attr_dim = THREAT_RELATIONAL_EDGE_DIM  # 10: 4 kinematic + 3 broad + 3 threat-aware
+                else:
+                    in_node_dim = LEGACY_SEMANTIC_NODE_DIM  # 10: 6 kinematics + 3 semantic one-hot + 1 conf
+                    edge_attr_dim = RELATIONAL_EDGE_DIM  # 7: 4 kinematic + 3 broad
+                self.graph_builder = DynamicSceneGraphBuilder(
+                    max_objects=self.cfg.max_objects,
+                    detector=self.detector,
+                    use_semantic=True,
+                    tracking_iou_threshold=self.cfg.tracking_iou_threshold,
+                    semantic_schema_version=self.cfg.semantic_schema_version,
+                )
             else:
-                in_node_dim = LEGACY_SEMANTIC_NODE_DIM  # 10: 6 kinematics + 3 semantic one-hot + 1 conf
-                edge_attr_dim = RELATIONAL_EDGE_DIM  # 7: 4 kinematic + 3 broad
-            self.graph_builder = DynamicSceneGraphBuilder(
-                max_objects=self.cfg.max_objects,
-                detector=self.detector,
-                use_semantic=True,
-                tracking_iou_threshold=self.cfg.tracking_iou_threshold,
-                semantic_schema_version=self.cfg.semantic_schema_version,
+                self.detector = None
+                in_node_dim = KINEMATIC_NODE_DIM   # 6 kinematic (center, size, velocity)
+                edge_attr_dim = KINEMATIC_EDGE_DIM  # 4 kinematic (dist, iou, rel_vel, persist)
+                self.graph_builder = DynamicSceneGraphBuilder(
+                    max_objects=self.cfg.max_objects,
+                    use_semantic=False,
+                    tracking_iou_threshold=self.cfg.tracking_iou_threshold,
+                    semantic_schema_version=self.cfg.semantic_schema_version,
+                )
+
+            # Optional RoI visual feature extractor for graph nodes
+            if self.cfg.node_visual_dim > 0:
+                feat_chans = self.backbone.feat_dim if self.backbone is not None else self.cfg.dim
+                self.roi_extractor = RoIFeatureExtractor(
+                    in_channels=feat_chans,
+                    out_dim=self.cfg.node_visual_dim
+                )
+                in_node_dim += self.cfg.node_visual_dim
+            else:
+                self.roi_extractor = None
+
+            # ── Module 4: Relational Edge-Conditioned Graph Attention ─────────
+            self.edge_gat = EdgeGAT(
+                in_dim=in_node_dim,
+                edge_dim=edge_attr_dim,
+                out_dim=self.cfg.graph_dim,
+                heads=self.cfg.heads,
+                use_edge_attrs=self.cfg.use_edge_attrs,
             )
+
+            # ── Module 5: Graph-Visual Cross-Attention Fusion ────────────────
+            self.fusion = GraphVisualFusion(
+                visual_dim=self.cfg.dim,
+                graph_dim=self.cfg.graph_dim,
+                heads=self.cfg.heads,
+            )
+
         else:
             self.detector = None
-            in_node_dim = KINEMATIC_NODE_DIM   # 6 kinematic (center, size, velocity)
-            edge_attr_dim = KINEMATIC_EDGE_DIM  # 4 kinematic (dist, iou, rel_vel, persist)
-            self.graph_builder = DynamicSceneGraphBuilder(
-                max_objects=self.cfg.max_objects,
-                use_semantic=False,
-                tracking_iou_threshold=self.cfg.tracking_iou_threshold,
-                semantic_schema_version=self.cfg.semantic_schema_version,
-            )
-
-        # Optional RoI visual feature extractor for graph nodes
-        if self.cfg.node_visual_dim > 0:
-            feat_chans = self.backbone.feat_dim if self.backbone is not None else self.cfg.dim
-            self.roi_extractor = RoIFeatureExtractor(
-                in_channels=feat_chans,
-                out_dim=self.cfg.node_visual_dim
-            )
-            in_node_dim += self.cfg.node_visual_dim
-        else:
+            self.graph_builder = None
             self.roi_extractor = None
-
-        # ── Module 4: Relational Edge-Conditioned Graph Attention ─────────
-        self.edge_gat = EdgeGAT(
-            in_dim=in_node_dim,
-            edge_dim=edge_attr_dim,
-            out_dim=self.cfg.graph_dim,
-            heads=self.cfg.heads
-        )
-
-        # ── Module 5: Graph-Visual Cross-Attention Fusion ────────────────
-        self.fusion = GraphVisualFusion(
-            visual_dim=self.cfg.dim,
-            graph_dim=self.cfg.graph_dim,
-            heads=self.cfg.heads,
-        )
-
+            self.edge_gat = None
+            self.fusion = None
         # ── Module 6: Graph-Guided Visual Token Pruning ──────────────────
         self.pruner = GraphGuidedPruner(
             visual_dim=self.cfg.dim,
@@ -166,9 +175,7 @@ class ARGUS(nn.Module):
         backbone_impl = "patch_projection"
         if self.backbone is not None:
             backbone_impl = "timm" if self.backbone.use_timm else "native_convnext"
-        detector_impl = "grid"
-        if self.detector is not None:
-            detector_impl = "yolo" if self.detector.has_yolo else "heuristic"
+        detector_impl = "none" if not self.cfg.use_graph else ("yolo" if (self.detector is not None and self.detector.has_yolo) else "heuristic")
         return {
             "backbone_implementation": backbone_impl,
             "backbone_name": self.cfg.backbone_name if self.backbone is not None else None,
@@ -178,9 +185,19 @@ class ARGUS(nn.Module):
             "semantic_schema_version": self.cfg.semantic_schema_version,
         }
 
-    def _encode_frame(self, frame: torch.Tensor, prev_boxes: Optional[torch.Tensor] = None):
+    def _encode_frame(
+        self,
+        frame: torch.Tensor,
+        prev_boxes: Optional[torch.Tensor] = None,
+        precomputed_det: Optional[DetectionResult] = None,
+        precomputed_patches: Optional[torch.Tensor] = None,
+        precomputed_active_feat: Optional[torch.Tensor] = None,
+    ):
         # 1. Visual Token Extraction
-        if self.backbone is not None:
+        if precomputed_patches is not None:
+            patches = precomputed_patches
+            active_feat_map = precomputed_active_feat
+        elif self.backbone is not None:
             patches, feat_maps = self.backbone(frame)
             active_feat_map = feat_maps[self.backbone.token_stage_idx]
         else:
@@ -188,8 +205,19 @@ class ARGUS(nn.Module):
             patches = p.flatten(2).transpose(1, 2)
             active_feat_map = p
 
+        if not self.cfg.use_graph:
+            pruned, topk_scores, topk_idx = self.pruner(patches, graph_affinity=None)
+            frame_token = pruned.mean(dim=1)
+            empty_boxes = torch.empty((0, 4), device=frame.device, dtype=torch.float32)
+            empty_edges = (torch.empty((0,), dtype=torch.long, device=frame.device), torch.empty((0,), dtype=torch.long, device=frame.device))
+            empty_edge_attr = torch.empty((0, 10), device=frame.device, dtype=torch.float32)
+            return frame_token, empty_boxes, topk_scores, None, None, empty_edges, empty_edge_attr
+
         # 2. Run detection ONCE (shared between RoI and graph builder)
-        det_result = self.graph_builder.detector(frame)
+        if precomputed_det is not None:
+            det_result = precomputed_det
+        else:
+            det_result = self.graph_builder.detector(frame)
         if hasattr(det_result, 'boxes'):
             det_boxes = det_result.boxes
         else:
@@ -251,6 +279,36 @@ class ARGUS(nn.Module):
         batch_edge_indices = []
         batch_edge_attrs = []
 
+        # Batched detector & backbone pre-computation across all chosen frames in one pass
+        batch_detections: dict[tuple[int, int], DetectionResult] = {}
+        batch_backbones: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+        all_frames_list = []
+        frame_keys = []
+        for i in range(b):
+            for frame_idx in selected_batches[i]:
+                all_frames_list.append(frames[i, frame_idx])
+                frame_keys.append((i, int(frame_idx)))
+
+        if all_frames_list:
+            stacked_frames = torch.stack(all_frames_list, dim=0)
+
+            # 1. Batched ConvNeXt Backbone (Runs all frames simultaneously on GPU)
+            if self.backbone is not None:
+                all_visual_tokens, all_feat_maps = self.backbone(stacked_frames)
+                active_feat_map_all = all_feat_maps[self.backbone.token_stage_idx]
+                for idx, k in enumerate(frame_keys):
+                    batch_backbones[k] = (all_visual_tokens[idx:idx+1], active_feat_map_all[idx:idx+1])
+
+            # 2. Batched YOLO Detector (Runs all frames simultaneously on GPU)
+            if self.cfg.use_graph and self.graph_builder is not None and self.graph_builder.detector is not None:
+                if hasattr(self.graph_builder.detector, 'detect_batch'):
+                    all_dets = self.graph_builder.detector.detect_batch(stacked_frames)
+                else:
+                    all_dets = [self.graph_builder.detector(f) for f in all_frames_list]
+                for k, d in zip(frame_keys, all_dets):
+                    batch_detections[k] = d
+
         for i in range(b):
             chosen = selected_batches[i]
             prev_boxes = None
@@ -265,7 +323,18 @@ class ARGUS(nn.Module):
             clip_edge_attrs = []
 
             for frame_idx in chosen:
-                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(frames[i, frame_idx], prev_boxes)
+                k = (i, int(frame_idx))
+                det_cached = batch_detections.get(k)
+                bb_cached = batch_backbones.get(k)
+                pre_patches = bb_cached[0] if bb_cached is not None else None
+                pre_active = bb_cached[1] if bb_cached is not None else None
+                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(
+                    frames[i, frame_idx],
+                    prev_boxes,
+                    precomputed_det=det_cached,
+                    precomputed_patches=pre_patches,
+                    precomputed_active_feat=pre_active,
+                )
                 prev_boxes = boxes.detach()
                 clip_tokens.append(f_token)
                 clip_boxes.append(boxes)
@@ -317,7 +386,7 @@ class ARGUS(nn.Module):
         # Dynamic Attention Modulation from spatial velocity & temporal entropy
         mod_weights = self.sampler.compute_attention_modulation(raw_scores, selected_batches, max_t)
 
-        if stream:
+        if stream and self.cfg.use_memory and self.cfg.memory_size > 0:
             enriched = self.memory(batch_tokens_t, update=True, stream_id=stream_id)
             encoded = self.temporal_encoder(enriched, modulation=mod_weights)
         else:

@@ -225,7 +225,7 @@ ARGUS was benchmarked across a unified, cross-domain surveillance test split (`d
 - **Threat-5 Relational Leap:** Expanding the scene graph to 5 semantic classes (Person, Vehicle, Bag, Weapon, Other) with 10D relational threat edge conditioning (P2W, P2B, W2O) achieved a staggering **0.9818 ROC-AUC** and **0.9290 F1-Score** on the RLVD benchmark ( = 144, TN = 134, FP = 16, FN = 6$), an absolute gain of **+44.02%** over the un-modeled baseline.
 - **Surpassing Vision-Language Models & SOTA:** Outperforms the foundational MIL baseline (Sultani et al., 75.41% AUC) by **+22.77%**, UR-DMU (86.97% AUC) by **+11.21%**, and 7B+ parameter zero-shot VLMs (LAVAD, 87.80% AUC) by **+10.38%** while operating with a 200x smaller parameter footprint (~28M parameters).
 - **Cross-Domain Zero-Shot Transfer:** When evaluated zero-shot on unseen, grainy UCF-Crime surveillance video ( = 290$), ARGUS Threat-5 maintains an **80.00% anomaly recall** ( / 140$ crimes caught) and **0.6038 F1-score**.
-- **Real-Time Edge Efficiency:** Executes at **31.2–33.5 FPS directly on commodity CPU** (scaling to >105 FPS on NVIDIA Jetson edge devices) with full multi-modal explainability, concurrent entity counting, and automated hysteresis alerting.
+- **Real-Time Edge Efficiency:** Executes at **31.2–33.5 FPS directly on commodity CPU** (scaling to >100 FPS on hardware-accelerated GPUs) with full multi-modal explainability, concurrent entity counting, and automated hysteresis alerting.
 
 ### Evaluation CLI
 

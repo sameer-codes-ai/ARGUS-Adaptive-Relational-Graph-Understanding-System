@@ -1,6 +1,7 @@
 """
 Dataset manifest generator and linker for ARGUS.
 Scans external or local surveillance datasets and generates structured CSV manifests for training, validation, and testing.
+Implements Phase 1.1: Atomic Grouped Splitting by Source Video to eliminate data leakage across splits.
 """
 
 from __future__ import annotations
@@ -8,14 +9,14 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import random
 from pathlib import Path
+import random
 import sys
 import time
 from tqdm import tqdm
 
-DEFAULT_DATASET_ROOT = Path(r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\datasets")
-DEFAULT_PROCESSED_ROOT = Path(r"C:\Users\s\Desktop\AURA-Aggression-Uncovering-Response-Algorithm\processed\train")
+DEFAULT_DATASET_ROOT = Path("datasets")
+DEFAULT_PROCESSED_ROOT = Path("processed/train")
 
 ANOMALY_CATEGORIES = {
     "abuse", "arrest", "arson", "assault", "burglary", "explosion", "fighting",
@@ -24,11 +25,27 @@ ANOMALY_CATEGORIES = {
 }
 
 NORMAL_CATEGORIES = {
-    "normal", "normalvideos", "nonviolence", "nonviolencep", "shanghaitech"
+    "normal", "normalvideos", "nonviolence", "nonviolencep"
 }
 
 MEDIA_EXTENSIONS = {'.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv', '.wmv', '.pt'}
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+
+
+def extract_source_id(record_path: str | Path) -> str:
+    """
+    Extract the original source video identity from a clip or frame path.
+    Strips sub-clip slices, temporal chunks, and encoder suffixes to guarantee
+    all derived clips from the same original recording share an identical source_id.
+    Examples:
+      - 'video123_clip_001.mp4' -> 'video123'
+      - 'Abuse028_x264_10.png' -> 'Abuse028'
+      - 'V_999.mp4' -> 'V_999'
+      - 'NV_101.mp4' -> 'NV_101'
+    """
+    stem = Path(record_path).stem
+    stem = stem.split("_clip_")[0].split("_x264")[0]
+    return stem
 
 
 def _media_entries(directory: Path) -> list[Path]:
@@ -73,7 +90,7 @@ def format_duration(seconds: float) -> str:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate ARGUS video manifests from datasets.")
+    parser = argparse.ArgumentParser(description="Generate ARGUS video manifests with atomic source-video grouping.")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT, help="Path to raw datasets folder.")
     parser.add_argument("--processed-root", type=Path, default=DEFAULT_PROCESSED_ROOT, help="Path to processed clips folder.")
     parser.add_argument("--output-dir", type=Path, default=Path("data"), help="Output directory for CSV manifests.")
@@ -84,9 +101,16 @@ def parse_args():
     parser.add_argument(
         "--datasets",
         nargs="+",
-        choices=("rlvd", "ucf", "shanghai", "processed"),
-        default=("rlvd", "ucf", "shanghai", "processed"),
+        choices=("rlvd", "ucf", "processed"),
+        default=("rlvd", "ucf", "processed"),
         help="Dataset sources to scan. Use '--datasets rlvd' for an RLVD-only run.",
+    )
+    parser.add_argument(
+        "--split-by",
+        type=str,
+        default="source_video",
+        choices=("source_video",),
+        help="Splitting strategy (grouped by source_video for zero leakage).",
     )
     return parser.parse_args()
 
@@ -97,6 +121,8 @@ def discover_real_life_violence(root: Path) -> list[dict]:
         (
             candidate
             for candidate in (
+                root / "preprocessed_rlvd",
+                root / "RLVD_preprocessed",
                 root / "RealLifeViolenceDataset",
                 root / "Real Life Violence Dataset",
             )
@@ -119,6 +145,7 @@ def discover_real_life_violence(root: Path) -> list[dict]:
         for video_dir in tqdm(media, desc=f"Scanning RealLifeViolence ({cat_name})", leave=False, dynamic_ncols=True):
             records.append({
                 "path": str(video_dir.resolve()),
+                "source_id": extract_source_id(video_dir),
                 "label": label_val,
                 "category": cat_name,
                 "dataset": "RealLifeViolence"
@@ -138,6 +165,7 @@ def discover_ucf_crime(root: Path) -> list[dict]:
                 if video_dir.is_dir() or video_dir.suffix.lower() in MEDIA_EXTENSIONS:
                     records.append({
                         "path": str(video_dir.resolve()),
+                        "source_id": extract_source_id(video_dir),
                         "label": label_val,
                         "category": cat_name,
                         "dataset": "UCF-Crime"
@@ -153,28 +181,11 @@ def discover_ucf_crime(root: Path) -> list[dict]:
             for media in _media_entries(cat_dir):
                 records.append({
                     "path": str(media.resolve()),
-                    "source_id": media.stem,
+                    "source_id": extract_source_id(media),
                     "label": label_val,
                     "category": cat_name,
                     "dataset": "UCF-Crime"
                 })
-    return records
-
-
-def discover_shanghaitech(root: Path) -> list[dict]:
-    records = []
-    st_dir = root / "ShanghaiTech" / "dataset" / "mp"
-    if not st_dir.is_dir():
-        return records
-
-    video_dirs = [d for d in st_dir.iterdir() if d.is_dir()]
-    for video_dir in tqdm(video_dirs, desc="Scanning ShanghaiTech", leave=False, dynamic_ncols=True):
-        records.append({
-            "path": str(video_dir.resolve()),
-            "label": 0,
-            "category": "Normal",
-            "dataset": "ShanghaiTech"
-        })
     return records
 
 
@@ -191,6 +202,7 @@ def discover_processed_clips(root: Path) -> list[dict]:
             if clip_dir.is_dir() or clip_dir.suffix.lower() in MEDIA_EXTENSIONS:
                 records.append({
                     "path": str(clip_dir.resolve()),
+                    "source_id": extract_source_id(clip_dir),
                     "label": label_val,
                     "category": cat_name,
                     "dataset": "ProcessedClips"
@@ -199,19 +211,28 @@ def discover_processed_clips(root: Path) -> list[dict]:
 
 
 def split_records(records: list[dict], train_r: float, val_r: float, test_r: float, seed: int):
+    """
+    Stratified split strictly partitioned by source_id.
+    All clips derived from the same original video are guaranteed to land in the
+    identical split, eliminating data leakage.
+    """
     if min(train_r, val_r, test_r) < 0 or abs((train_r + val_r + test_r) - 1.0) > 1e-6:
         raise ValueError("train, validation, and test ratios must be non-negative and sum to 1")
     random.seed(seed)
+
+    # 1. Bucket strictly by source video identity within (dataset, category, label)
     buckets: dict[tuple, list[dict]] = {}
     for r in records:
-        source_id = r.get("source_id") or Path(r["path"]).stem.split("_clip_")[0]
+        source_id = r.get("source_id") or extract_source_id(r["path"])
         key = (r["dataset"], r["category"], r["label"], source_id)
         buckets.setdefault(key, []).append(r)
 
-    train, val, test = [], [], []
+    # 2. Stratify by (dataset, category, label) so class balance is preserved
     strata: dict[tuple, list[list[dict]]] = {}
     for key, group in buckets.items():
         strata.setdefault(key[:3], []).append(group)
+
+    train, val, test = [], [], []
     for groups in strata.values():
         random.shuffle(groups)
         n = len(groups)
@@ -219,15 +240,34 @@ def split_records(records: list[dict], train_r: float, val_r: float, test_r: flo
         n_val = int(n * val_r)
         for group in groups[:n_train]:
             train.extend(group)
-        for group in groups[n_train:n_train + n_val]:
+        for group in groups[n_train : n_train + n_val]:
             val.extend(group)
-        for group in groups[n_train + n_val:]:
+        for group in groups[n_train + n_val :]:
             test.extend(group)
 
     random.shuffle(train)
     random.shuffle(val)
     random.shuffle(test)
     return train, val, test
+
+
+def verify_no_data_leakage(train: list[dict], val: list[dict], test: list[dict]) -> None:
+    """Verify that train, val, and test share zero source video identities."""
+    train_sources = {r.get("source_id") or extract_source_id(r["path"]) for r in train}
+    val_sources = {r.get("source_id") or extract_source_id(r["path"]) for r in val}
+    test_sources = {r.get("source_id") or extract_source_id(r["path"]) for r in test}
+
+    leak_train_val = train_sources.intersection(val_sources)
+    leak_train_test = train_sources.intersection(test_sources)
+    leak_val_test = val_sources.intersection(test_sources)
+
+    if leak_train_val:
+        raise AssertionError(f"DATA LEAKAGE DETECTED: {len(leak_train_val)} source videos shared between Train and Val!")
+    if leak_train_test:
+        raise AssertionError(f"DATA LEAKAGE DETECTED: {len(leak_train_test)} source videos shared between Train and Test!")
+    if leak_val_test:
+        raise AssertionError(f"DATA LEAKAGE DETECTED: {len(leak_val_test)} source videos shared between Val and Test!")
+    print(f"  [VERIFIED] 0% data leakage across splits ({len(train_sources)} train, {len(val_sources)} val, {len(test_sources)} test source videos).")
 
 
 def save_csv(path: Path, records: list[dict]):
@@ -246,11 +286,11 @@ def save_csv(path: Path, records: list[dict]):
 def main():
     args = parse_args()
     start_time = time.perf_counter()
-    print("=" * 55)
-    print("        ARGUS SURVEILLANCE DATASET MANIFEST SCAN        ")
-    print("=" * 55)
+    print("=" * 60)
+    print("      ARGUS DATASET MANIFEST GENERATOR (PHASE 1.1)      ")
+    print("=" * 60)
 
-    print("Scanning dataset sources...")
+    print(f"Dataset root: {args.dataset_root.resolve()}")
     selected = set(args.datasets)
 
     rl_records = discover_real_life_violence(args.dataset_root) if "rlvd" in selected else []
@@ -259,24 +299,23 @@ def main():
     ucf_records = discover_ucf_crime(args.dataset_root) if "ucf" in selected else []
     print(f"  - UCF-Crime:        {len(ucf_records)} videos")
 
-    st_records = discover_shanghaitech(args.dataset_root) if "shanghai" in selected else []
-    print(f"  - ShanghaiTech:     {len(st_records)} videos")
-
     proc_records = discover_processed_clips(args.processed_root) if "processed" in selected else []
     print(f"  - Processed Clips:  {len(proc_records)} clips")
 
-    raw_records = rl_records + ucf_records + st_records
-    # Processed clips are derivatives of raw videos. Mixing both without a
-    # provenance map leaks related content across splits, so prefer processed
-    # clips when they are available.
-    total_records = proc_records if proc_records else raw_records
+    raw_records = rl_records + ucf_records
+    proc_source_ids = {r.get("source_id") or extract_source_id(r["path"]) for r in proc_records}
+    total_records = proc_records + [
+        r for r in raw_records
+        if (r.get("source_id") or extract_source_id(r["path"])) not in proc_source_ids
+    ]
     print(f"Total selected sequences: {len(total_records)}\n")
 
-    print("Generating stratified splits (Train/Val/Test)...")
+    print("Generating atomic grouped splits (Train 70% / Val 15% / Test 15%)...")
 
-    # 1. Split for RealLifeViolence (fast benchmark)
+    # 1. Split for RealLifeViolence
     if rl_records:
         tr_v, va_v, te_v = split_records(rl_records, args.train_ratio, args.val_ratio, args.test_ratio, args.seed)
+        verify_no_data_leakage(tr_v, va_v, te_v)
         save_csv(args.output_dir / "train_violence.csv", tr_v)
         save_csv(args.output_dir / "val_violence.csv", va_v)
         save_csv(args.output_dir / "test_violence.csv", te_v)
@@ -284,6 +323,7 @@ def main():
     # 2. Split for UCF-Crime
     if ucf_records:
         tr_u, va_u, te_u = split_records(ucf_records, args.train_ratio, args.val_ratio, args.test_ratio, args.seed)
+        verify_no_data_leakage(tr_u, va_u, te_u)
         save_csv(args.output_dir / "train_ucf.csv", tr_u)
         save_csv(args.output_dir / "val_ucf.csv", va_u)
         save_csv(args.output_dir / "test_ucf.csv", te_u)
@@ -291,34 +331,37 @@ def main():
     # 3. Split for Processed Clips
     if proc_records:
         tr_p, va_p, te_p = split_records(proc_records, args.train_ratio, args.val_ratio, args.test_ratio, args.seed)
+        verify_no_data_leakage(tr_p, va_p, te_p)
         save_csv(args.output_dir / "train_processed.csv", tr_p)
         save_csv(args.output_dir / "val_processed.csv", va_p)
         save_csv(args.output_dir / "test_processed.csv", te_p)
 
-    # 4. Primary default dataset (Processed clips if available, else RealLifeViolence)
-    if proc_records:
-        save_csv(args.output_dir / "train.csv", tr_p)
-        save_csv(args.output_dir / "val.csv", va_p)
-        save_csv(args.output_dir / "test.csv", te_p)
-    elif rl_records:
-        save_csv(args.output_dir / "train.csv", tr_v)
-        save_csv(args.output_dir / "val.csv", va_v)
-        save_csv(args.output_dir / "test.csv", te_v)
+    # 4. Generate Clean Standard Manifests (train_clean.csv, val_clean.csv, test_clean.csv)
+    chosen_records = proc_records if proc_records else rl_records
+    if chosen_records:
+        tr_c, va_c, te_c = split_records(chosen_records, args.train_ratio, args.val_ratio, args.test_ratio, args.seed)
+        verify_no_data_leakage(tr_c, va_c, te_c)
+        save_csv(args.output_dir / "train_clean.csv", tr_c)
+        save_csv(args.output_dir / "val_clean.csv", va_c)
+        save_csv(args.output_dir / "test_clean.csv", te_c)
+        # Also update primary default train.csv / val.csv / test.csv
+        save_csv(args.output_dir / "train.csv", tr_c)
+        save_csv(args.output_dir / "val.csv", va_c)
+        save_csv(args.output_dir / "test.csv", te_c)
 
     # 5. Combined all dataset
     if total_records:
         tr_all, va_all, te_all = split_records(total_records, args.train_ratio, args.val_ratio, args.test_ratio, args.seed)
+        verify_no_data_leakage(tr_all, va_all, te_all)
         save_csv(args.output_dir / "train_all.csv", tr_all)
         save_csv(args.output_dir / "val_all.csv", va_all)
         save_csv(args.output_dir / "test_all.csv", te_all)
 
     elapsed = time.perf_counter() - start_time
-    print("-" * 55)
+    print("-" * 60)
     print(f"[OK] Manifest generation complete in {format_duration(elapsed)}!")
-    print("=" * 55)
+    print("=" * 60)
 
 
 if __name__ == "__main__":
     main()
-
-

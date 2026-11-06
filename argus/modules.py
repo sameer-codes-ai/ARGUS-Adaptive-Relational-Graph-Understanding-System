@@ -93,6 +93,8 @@ class TemporalMemory(nn.Module):
     def forward(self, latest: torch.Tensor, update: bool = True, stream_id: str = "default") -> torch.Tensor:
         if latest.shape[0] != 1:
             raise ValueError("Streaming memory requires batch size 1 and an explicit stream identity")
+        if self.size <= 0:
+            return latest
         key = str(stream_id)
         previous = self._stream_banks.get(key)
         if previous is None:
@@ -132,7 +134,7 @@ class TemporalEncoder(nn.Module):
     ) -> torch.Tensor:
         b, t = x.shape[:2]
         # Base causal upper-triangular mask
-        mask = torch.triu(torch.full((t, t), float('-inf'), device=x.device), 1)
+        mask = torch.triu(torch.ones((t, t), device=x.device, dtype=torch.bool), 1)
 
         if modulation is not None:
             # Dynamic attention modulation from spatial velocity and temporal entropy

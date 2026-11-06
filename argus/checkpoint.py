@@ -62,7 +62,7 @@ def validate_component_metadata(checkpoint: Mapping, model, *, allow_partial: bo
     mismatch_detail = None
     if saved_schema and saved_schema != current_schema:
         mismatch_detail = f"semantic schema version mismatch: saved={saved_schema!r}, model={current_schema!r}"
-    elif state_dict and "edge_gat.proj.weight" in state_dict and hasattr(model, "edge_gat"):
+    elif state_dict and "edge_gat.proj.weight" in state_dict and getattr(model, "edge_gat", None) is not None:
         saved_gat_in = state_dict["edge_gat.proj.weight"].shape[1]
         expected_gat_in = model.edge_gat.proj.in_features
         if saved_gat_in != expected_gat_in:
@@ -82,12 +82,14 @@ def validate_component_metadata(checkpoint: Mapping, model, *, allow_partial: bo
             )
 
     if saved:
-        current = model.component_metadata()
-        keys = ("backbone_implementation", "backbone_name", "detector_implementation", "detector_model")
+        current = model.component_metadata() if hasattr(model, "component_metadata") else {}
+        keys = ("model_type", "backbone_implementation", "backbone_name")
+        if getattr(model, "detector", None) is not None:
+            keys = keys + ("detector_implementation", "detector_model")
         mismatches = {
             key: (saved.get(key), current.get(key))
             for key in keys
-            if saved.get(key) != current.get(key)
+            if key in saved and key in current and saved.get(key) != current.get(key)
         }
         if mismatches:
             details = ", ".join(f"{key}: saved={old!r}, current={new!r}" for key, (old, new) in mismatches.items())

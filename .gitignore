@@ -7,18 +7,33 @@ __pycache__/
 .cache/
 .testdeps/
 .wheels/
-datasets/
+
+# Raw un-preprocessed datasets (keep preprocessed_rlvd and preprocessed_ucf_test tracked)
+datasets/Real Life Violence Dataset/
+datasets/RealLifeViolenceDataset/
+datasets/UCF-Crime/
+datasets/organized/
 
 # Temporary data caches
 data/cache/
 *.tmp
 
-# Checkpoints and output artifacts
-outputs/
-*.pt
-*.pth
+# Exclude legacy, smoke, and redundant latest.pt checkpoints not needed by EXECUTION_ORDER.md
+outputs/checkpoints/
+outputs/checkpoints_joint/
+outputs/checkpoints_outer/
+outputs/checkpoints_rlvd/
+outputs/checkpoints_rlvd_legacy3/
+outputs/smoke_rlvd/
+outputs/smoke_rlvd_full/
+outputs/checkpoints_rlvd_full/*legacy3.pt
+outputs/**/latest.pt
+outputs/eval_ucf_threat5.json
+outputs/profiling/test_pareto.png
+outputs/*.html
+outputs/infer_result.json
+outputs/web_uploads/
 
 # OS files
 .DS_Store
 Thumbs.db
-

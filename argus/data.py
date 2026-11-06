@@ -207,12 +207,15 @@ class VideoManifest(Dataset):
         frames: int = 16,
         image_size: int = 96,
         augment: bool = False,
+        cache_in_memory: bool = True,
     ):
         self.manifest_path = Path(manifest_path)
         self.frames = frames
         self.image_size = image_size
         self.augment = augment
+        self.cache_in_memory = cache_in_memory
         self.records: list[dict] = []
+        self._cache: dict[int, torch.Tensor] = {}
 
         if not self.manifest_path.exists():
             raise FileNotFoundError(f"Manifest CSV not found: {self.manifest_path}")
@@ -248,9 +251,28 @@ class VideoManifest(Dataset):
     def __len__(self) -> int:
         return len(self.records)
 
+    def preload_cache(self, verbose: bool = True) -> None:
+        """Preload all clips into memory to eliminate disk I/O on subsequent accesses."""
+        if not self.cache_in_memory:
+            return
+        it = range(len(self.records))
+        if verbose:
+            from tqdm import tqdm
+            it = tqdm(it, desc=f"Caching {self.manifest_path.stem} to RAM", leave=False)
+        for idx in it:
+            if idx not in self._cache:
+                rec = self.records[idx]
+                clip = load_clip_from_path(rec['path'], target_frames=self.frames, image_size=self.image_size)
+                self._cache[idx] = clip.half()
+
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         rec = self.records[idx]
-        clip = load_clip_from_path(rec['path'], target_frames=self.frames, image_size=self.image_size)
+        if self.cache_in_memory and idx in self._cache:
+            clip = self._cache[idx].float()
+        else:
+            clip = load_clip_from_path(rec['path'], target_frames=self.frames, image_size=self.image_size)
+            if self.cache_in_memory:
+                self._cache[idx] = clip.half()
         if self.augment:
             clip = apply_augmentations(clip)
         label = torch.tensor(rec['label'], dtype=torch.float32)

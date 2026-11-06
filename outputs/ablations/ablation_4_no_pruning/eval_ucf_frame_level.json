@@ -1,0 +1,137 @@
+{
+  "protocol": "UCF-Crime Official Frame-Level Sliding Window (Sultani et al. CVPR 2018)",
+  "checkpoint": "C:\\Users\\Gourav\\Desktop\\ARGUS-Adaptive-Relational-Graph-Understanding-System\\outputs\\ablations\\ablation_4_no_pruning\\best.pt",
+  "sliding_window": {
+    "clip_len": 16,
+    "stride": 16,
+    "aggregation": "mean",
+    "streaming": true
+  },
+  "metrics": {
+    "frame_roc_auc": 0.4922,
+    "frame_pr_auc": 0.0924,
+    "eer": 0.518,
+    "eer_threshold": 0.0004,
+    "false_alarm_rate_tau_050": 0.374,
+    "false_alarm_rate_tau_eer": 0.5661,
+    "accuracy_tau_050": 0.6562,
+    "precision_tau_050": 0.069,
+    "recall_tau_050": 0.2785,
+    "f1_score_tau_050": 0.1107
+  },
+  "confusion_matrix_tau_050": {
+    "tp": 2381,
+    "fp": 32103,
+    "fn": 6167,
+    "tn": 70657
+  },
+  "performance": {
+    "total_videos_evaluated": 290,
+    "expected_total_videos": 290,
+    "is_complete_benchmark": true,
+    "total_frames_evaluated": 111308,
+    "elapsed_seconds": 757.7,
+    "effective_fps": 146.9,
+    "latency_ms_per_frame": 6.81
+  },
+  "category_breakdown": {
+    "Abuse": {
+      "total_frames": 297,
+      "anomaly_frames": 17,
+      "mean_anomaly_score": 0.169,
+      "max_anomaly_score": 0.9967,
+      "roc_auc": 0.5515
+    },
+    "Arrest": {
+      "total_frames": 3365,
+      "anomaly_frames": 783,
+      "mean_anomaly_score": 0.1107,
+      "max_anomaly_score": 0.9995,
+      "roc_auc": 0.4079
+    },
+    "Arson": {
+      "total_frames": 2793,
+      "anomaly_frames": 823,
+      "mean_anomaly_score": 0.0892,
+      "max_anomaly_score": 0.9995,
+      "roc_auc": 0.4098
+    },
+    "Assault": {
+      "total_frames": 2657,
+      "anomaly_frames": 854,
+      "mean_anomaly_score": 0.283,
+      "max_anomaly_score": 0.9997,
+      "roc_auc": 0.8968
+    },
+    "Burglary": {
+      "total_frames": 7657,
+      "anomaly_frames": 1623,
+      "mean_anomaly_score": 0.125,
+      "max_anomaly_score": 0.9994,
+      "roc_auc": 0.5012
+    },
+    "Explosion": {
+      "total_frames": 6510,
+      "anomaly_frames": 778,
+      "mean_anomaly_score": 0.1763,
+      "max_anomaly_score": 0.9997,
+      "roc_auc": 0.3187
+    },
+    "Fighting": {
+      "total_frames": 1231,
+      "anomaly_frames": 448,
+      "mean_anomaly_score": 0.2847,
+      "max_anomaly_score": 0.9984,
+      "roc_auc": 0.4455
+    },
+    "Normal": {
+      "total_frames": 64952,
+      "anomaly_frames": 0,
+      "mean_anomaly_score": 0.3728,
+      "max_anomaly_score": 0.9998,
+      "roc_auc": "N/A (single class)"
+    },
+    "RoadAccidents": {
+      "total_frames": 2663,
+      "anomaly_frames": 243,
+      "mean_anomaly_score": 0.1024,
+      "max_anomaly_score": 0.9988,
+      "roc_auc": 0.4521
+    },
+    "Robbery": {
+      "total_frames": 835,
+      "anomaly_frames": 385,
+      "mean_anomaly_score": 0.4557,
+      "max_anomaly_score": 0.9997,
+      "roc_auc": 0.5321
+    },
+    "Shooting": {
+      "total_frames": 7630,
+      "anomaly_frames": 997,
+      "mean_anomaly_score": 0.2859,
+      "max_anomaly_score": 0.9998,
+      "roc_auc": 0.6126
+    },
+    "Shoplifting": {
+      "total_frames": 7623,
+      "anomaly_frames": 775,
+      "mean_anomaly_score": 0.3062,
+      "max_anomaly_score": 0.9998,
+      "roc_auc": 0.628
+    },
+    "Stealing": {
+      "total_frames": 1984,
+      "anomaly_frames": 607,
+      "mean_anomaly_score": 0.5027,
+      "max_anomaly_score": 0.9994,
+      "roc_auc": 0.4772
+    },
+    "Vandalism": {
+      "total_frames": 1111,
+      "anomaly_frames": 215,
+      "mean_anomaly_score": 0.1163,
+      "max_anomaly_score": 0.9992,
+      "roc_auc": 0.6718
+    }
+  }
+}
