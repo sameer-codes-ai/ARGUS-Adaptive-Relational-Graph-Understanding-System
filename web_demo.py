@@ -793,6 +793,12 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
             return
 
         # Serve media files, static docs, or dashboards with HTTP 206 Partial Content range support
+        elif path == '/result_analysis.md':
+            p = (Path.cwd() / 'result_analysis.md').resolve()
+            if p.is_file():
+                serve_file_ranged(self, p)
+                return
+
         elif path.startswith('/demo_samples/') or path.startswith('/outputs/') or path.startswith('/docs/'):
             local_file = resolve_static_path(path)
             if local_file is not None:

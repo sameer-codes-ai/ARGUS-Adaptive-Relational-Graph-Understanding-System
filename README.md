@@ -211,8 +211,7 @@ python train.py --resume outputs/checkpoints/best.pt --epochs 5 --manifest data/
 
 ## Empirical Evaluation & Results
 
-ARGUS was extensively benchmarked across multiple surveillance suites, including the **RealLifeViolenceDataset** (RLVD) clean split ( = 300$ clips, ,800$ frames) and cross-dataset zero-shot evaluation on the **UCF-Crime** benchmark ($ untrimmed videos, ,308$ frames). The full scientific audit report is documented in [summary.md](summary.md) and [
-esult_analysis.md](result_analysis.md).
+ARGUS was extensively benchmarked across multiple surveillance suites, including the **RealLifeViolenceDataset** (RLVD) clean split ($N = 300$ clips, $4,800$ frames) and cross-dataset zero-shot evaluation on the **UCF-Crime** benchmark ($290$ untrimmed videos, $111,308$ frames). The full scientific audit report is documented in [`result_analysis.md`](result_analysis.md).
 
 ### 1. Architectural Progression Matrix
 
@@ -392,26 +391,20 @@ Generated manifests in `data/`:
 
 ---
 
-## Research Manuscripts & Experimental Reports
+## Empirical Documentation
 
-ARGUS includes full research documentation and reproducible experimental analysis:
+ARGUS includes full empirical result analysis and documentation:
 
 | Document | Focus & Scope |
 | :--- | :--- |
-| [FinalPaper.md](FinalPaper.md) / [Paper.md](Paper.md) | Full research paper detailing the dual-layer architecture, mathematical formulations, and experimental results. |
-| [summary.md](summary.md) | Complete empirical experimental suite summary: multi-seed 95% CIs, baseline comparisons, ablations, and profiling. |
-| [
-esult_analysis.md](result_analysis.md) | Comprehensive result analysis report on Threat-5 in-domain training dynamics, confusion matrices, and transfer analysis. |
-| [EXECUTION_ORDER.md](EXECUTION_ORDER.md) | Reproducible step-by-step execution pipeline from preprocessing through multi-seed training and profiling. |
+| [`result_analysis.md`](result_analysis.md) | Comprehensive result analysis report on Threat-5 in-domain training dynamics, confusion matrices, and transfer analysis. |
 
 ---
 
 ## Directory Structure
 
-`
+```
 ARGUS/
-├── .ai/                       # Architecture registry and system context
-│   └── project_context.md
 ├── argus/                     # Core neural and semantic package
 │   ├── __init__.py            # Clean public API exports
 │   ├── alerts.py              # Real-Time Alert Dispatcher & HTML Dashboard
@@ -452,12 +445,10 @@ ARGUS/
 ├── infer.py                   # Single-clip & streaming inference CLI
 ├── pyproject.toml             # Project packaging & dependencies
 ├── requirements.txt           # Project dependencies
-├── summary.md                 # Complete empirical suite summary report
 ├── result_analysis.md         # Threat-5 result analysis report
-├── FinalPaper.md              # Research manuscript
 ├── train.py                   # Training loop with AMP and history tracking
 └── web_demo.py                # Interactive browser surveillance console
-`
+```
 
 ---
 

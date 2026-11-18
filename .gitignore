@@ -40,4 +40,8 @@ Thumbs.db
 
 # Documentation & drafts excluded from public release
 docs/
+.ai/
+*.md
+!README.md
+!result_analysis.md
 
