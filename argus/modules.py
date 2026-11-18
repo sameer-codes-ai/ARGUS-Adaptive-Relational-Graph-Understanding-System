@@ -74,10 +74,11 @@ class TemporalMemory(nn.Module):
     """
     Bounded streaming FIFO memory bank for causal video evaluation.
     """
-    def __init__(self, dim: int = 192, size: int = 16):
+    def __init__(self, dim: int = 192, size: int = 16, max_streams: int = 256):
         super().__init__()
         self.dim = dim
         self.size = size
+        self._max_streams = max_streams
         self.register_buffer('bank', None)
         self._stream_banks: dict[str, torch.Tensor] = {}
 
@@ -109,6 +110,8 @@ class TemporalMemory(nn.Module):
                 else:
                     new_bank = torch.cat([previous.to(latest.device), latest.detach()], dim=1)
                 new_bank = new_bank[:, -self.size:]
+                if key not in self._stream_banks and len(self._stream_banks) >= self._max_streams:
+                    self._stream_banks.pop(next(iter(self._stream_banks)))
                 self._stream_banks[key] = new_bank
                 if key == "default":
                     self.bank = new_bank

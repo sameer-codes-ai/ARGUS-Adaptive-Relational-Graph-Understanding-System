@@ -51,7 +51,8 @@ class CausalTemporalShift(nn.Module):
 
         if buffer is not None and buffer.shape[0] == b:
             # Shift forward using buffer for the first frame
-            past_part = torch.cat([buffer[:, :, :shift_dim], x_shift[:, :-1]], dim=1)
+            buf = buffer.to(device=x.device, dtype=x.dtype)
+            past_part = torch.cat([buf[:, :, :shift_dim], x_shift[:, :-1]], dim=1)
         else:
             # Zero-padding for the first frame when no buffer is available
             zero_pad = torch.zeros((b, 1, shift_dim), dtype=x.dtype, device=x.device)
@@ -109,6 +110,7 @@ class CausalTSM(nn.Module):
         )
 
         # Streaming Memory Cache: stream_id -> (1, 1, C)
+        self._max_streams = 256
         self._stream_buffers: Dict[str, torch.Tensor] = {}
 
     def reset(self, stream_id: Optional[str] = None):
@@ -139,6 +141,8 @@ class CausalTSM(nn.Module):
         if frames.ndim != 5 or frames.shape[2] != 3:
             raise ValueError("frames must have shape (B, T, 3, H, W)")
         b, t, c, h, w = frames.shape
+        if b == 0 or t == 0:
+            raise ValueError("frames must contain at least one batch item and one frame")
         if stream and b != 1:
             raise ValueError("streaming inference requires batch size 1")
 
@@ -160,6 +164,8 @@ class CausalTSM(nn.Module):
         # Apply causal temporal shift
         shifted, new_buf = self.tsm(frame_feats, buffer=buf)
         if stream:
+            if stream_key not in self._stream_buffers and len(self._stream_buffers) >= self._max_streams:
+                self._stream_buffers.pop(next(iter(self._stream_buffers)))
             self._stream_buffers[stream_key] = new_buf
 
         # Causal residual temporal aggregation
@@ -169,7 +175,7 @@ class CausalTSM(nn.Module):
         scores = self.head(temporal_feats).squeeze(-1)  # (B, T)
 
         valid_mask = torch.ones((b, t), dtype=torch.bool, device=frames.device)
-        selected_batches = [list(range(t)) for _ in range(b)]
+        selected_batches = [torch.arange(t, device=frames.device, dtype=torch.long) for _ in range(b)]
         empty_boxes = [[torch.empty((0, 4), device=frames.device) for _ in range(t)] for _ in range(b)]
 
         return ARGUSOutput(

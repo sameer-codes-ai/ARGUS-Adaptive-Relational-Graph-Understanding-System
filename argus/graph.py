@@ -47,20 +47,22 @@ class GridDetector:
         gy[:-1, :] = torch.abs(gray[1:, :] - gray[:-1, :])
         energy = gx + gy
         cell = max(8, min(h, w) // 6)
-        candidates = []
-        for y in range(0, h - cell + 1, cell):
-            for x in range(0, w - cell + 1, cell):
-                score = energy[y:y + cell, x:x + cell].sum().item() + gray[y:y + cell, x:x + cell].var().item()
-                candidates.append((score, x, y, x + cell, y + cell))
-        candidates.sort(key=lambda a: float(a[0]), reverse=True)
-        boxes = torch.tensor(
-            [[x / w, y / h, x2 / w, y2 / h] for _, x, y, x2, y2 in candidates[:self.max_objects]],
-            device=frame.device,
-            dtype=torch.float32
-        )
-        if len(boxes) == 0:
-            boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=frame.device, dtype=torch.float32)
-        return boxes
+        if h < cell or w < cell:
+            return torch.tensor([[0.0, 0.0, 1.0, 1.0]], device=frame.device, dtype=torch.float32)
+
+        e_blocks = energy.unfold(0, cell, cell).unfold(1, cell, cell)
+        g_blocks = gray.unfold(0, cell, cell).unfold(1, cell, cell)
+        scores = (e_blocks.sum(dim=(-2, -1)) + g_blocks.var(dim=(-2, -1))).reshape(-1)
+        nx = g_blocks.shape[1]
+        k = min(self.max_objects, scores.numel())
+        _, top_idx = torch.topk(scores, k)
+        iy = (top_idx // nx).float()
+        ix = (top_idx % nx).float()
+        x1 = (ix * cell) / w
+        y1 = (iy * cell) / h
+        x2 = (ix * cell + cell) / w
+        y2 = (iy * cell + cell) / h
+        return torch.stack([x1, y1, x2, y2], dim=-1).to(dtype=torch.float32)
 
 
 class DynamicSceneGraphBuilder:
@@ -174,25 +176,27 @@ class DynamicSceneGraphBuilder:
             velocity = torch.zeros_like(centers)
             # Greedy IoU association prevents detector ordering changes from being
             # interpreted as object motion.
+            ix1 = torch.maximum(boxes[:, 0:1], prev_boxes[:, 0:1].T)
+            iy1 = torch.maximum(boxes[:, 1:2], prev_boxes[:, 1:2].T)
+            ix2 = torch.minimum(boxes[:, 2:3], prev_boxes[:, 2:3].T)
+            iy2 = torch.minimum(boxes[:, 3:4], prev_boxes[:, 3:4].T)
+            inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
+            area_current = (boxes[:, 2] - boxes[:, 0]).clamp(min=0) * (boxes[:, 3] - boxes[:, 1]).clamp(min=0)
+            area_previous = ((prev_boxes[:, 2] - prev_boxes[:, 0]).clamp(min=0)
+                             * (prev_boxes[:, 3] - prev_boxes[:, 1]).clamp(min=0))
+            iou_mat = (inter / (area_current[:, None] + area_previous[None, :] - inter + 1e-6)).tolist()
             used_prev: set[int] = set()
             for current_idx in range(n):
-                box = boxes[current_idx]
-                ix1 = torch.maximum(box[0], prev_boxes[:, 0])
-                iy1 = torch.maximum(box[1], prev_boxes[:, 1])
-                ix2 = torch.minimum(box[2], prev_boxes[:, 2])
-                iy2 = torch.minimum(box[3], prev_boxes[:, 3])
-                inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
-                area_current = (box[2] - box[0]).clamp(min=0) * (box[3] - box[1]).clamp(min=0)
-                area_previous = ((prev_boxes[:, 2] - prev_boxes[:, 0]).clamp(min=0)
-                                 * (prev_boxes[:, 3] - prev_boxes[:, 1]).clamp(min=0))
-                ious = inter / (area_current + area_previous - inter + 1e-6)
-                for prev_idx in used_prev:
-                    ious[prev_idx] = -1.0
-                best_iou, best_idx = ious.max(dim=0)
-                if float(best_iou) >= self.tracking_iou_threshold:
-                    matched = int(best_idx)
-                    used_prev.add(matched)
-                    velocity[current_idx] = centers[current_idx] - prev_centers[matched]
+                row_ious = iou_mat[current_idx]
+                best_iou = -1.0
+                best_idx = -1
+                for prev_idx, val in enumerate(row_ious):
+                    if prev_idx not in used_prev and val > best_iou:
+                        best_iou = val
+                        best_idx = prev_idx
+                if best_idx >= 0 and best_iou >= self.tracking_iou_threshold:
+                    used_prev.add(best_idx)
+                    velocity[current_idx] = centers[current_idx] - prev_centers[best_idx]
         else:
             velocity = torch.zeros_like(centers)
 
@@ -212,71 +216,59 @@ class DynamicSceneGraphBuilder:
                 node_parts.append(visual_features)
             node_feats = torch.cat(node_parts, dim=-1)
 
-        # Build edges and relational attributes
-        edges_src, edges_dst, edge_attrs = [], [], []
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                d = torch.norm(centers[i] - centers[j])
-                if d <= self.dist_threshold:
-                    bi = boxes[i]
-                    bj = boxes[j]
-                    ix1, iy1 = torch.max(bi[0], bj[0]), torch.max(bi[1], bj[1])
-                    ix2, iy2 = torch.min(bi[2], bj[2]), torch.min(bi[3], bj[3])
-                    inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
-                    area_i = (bi[2] - bi[0]) * (bi[3] - bi[1])
-                    area_j = (bj[2] - bj[0]) * (bj[3] - bj[1])
-                    union = area_i + area_j - inter + 1e-6
-                    iou = inter / union
-                    rel_vel = torch.norm(velocity[i] - velocity[j])
+        # Build edges and relational attributes (vectorized on device)
+        dist_mat = torch.norm(centers.unsqueeze(1) - centers.unsqueeze(0), dim=-1)
+        eye = torch.eye(n, device=frame.device, dtype=torch.bool)
+        adj = (dist_mat <= self.dist_threshold) & (~eye)
+        src_t, dst_t = adj.nonzero(as_tuple=True)
+        if src_t.numel() == 0:
+            src_t = torch.arange(n, device=frame.device, dtype=torch.long)
+            dst_t = src_t
 
-                    if self.use_semantic and sem_types is not None:
-                        ti = int(sem_types[i].item() if hasattr(sem_types[i], 'item') else sem_types[i])
-                        tj = int(sem_types[j].item() if hasattr(sem_types[j], 'item') else sem_types[j])
-                        is_p2p = 1.0 if (ti == SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_PERSON) else 0.0
-                        is_p2o = 1.0 if ((ti == SEMANTIC_TYPE_PERSON and tj != SEMANTIC_TYPE_PERSON) or (ti != SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_PERSON)) else 0.0
-                        is_o2o = 1.0 if (ti != SEMANTIC_TYPE_PERSON and tj != SEMANTIC_TYPE_PERSON) else 0.0
+        d_t = dist_mat[src_t, dst_t].float()
+        bi = boxes[src_t]
+        bj = boxes[dst_t]
+        ix1 = torch.maximum(bi[:, 0], bj[:, 0])
+        iy1 = torch.maximum(bi[:, 1], bj[:, 1])
+        ix2 = torch.minimum(bi[:, 2], bj[:, 2])
+        iy2 = torch.minimum(bi[:, 3], bj[:, 3])
+        inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
+        area_i = (bi[:, 2] - bi[:, 0]) * (bi[:, 3] - bi[:, 1])
+        area_j = (bj[:, 2] - bj[:, 0]) * (bj[:, 3] - bj[:, 1])
+        iou_t = (inter / (area_i + area_j - inter + 1e-6)).float()
+        rel_vel_t = torch.norm(velocity[src_t] - velocity[dst_t], dim=-1).float()
+        persist_t = torch.ones_like(d_t)
 
-                        if self.semantic_schema_version == "threat5":
-                            # Threat-aware relations:
-                            # Person-to-Weapon (P2W)
-                            is_p2w = 1.0 if ((ti == SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_WEAPON) or (ti == SEMANTIC_TYPE_WEAPON and tj == SEMANTIC_TYPE_PERSON)) else 0.0
-                            # Person-to-Bag (P2B)
-                            is_p2b = 1.0 if ((ti == SEMANTIC_TYPE_PERSON and tj == SEMANTIC_TYPE_BAG) or (ti == SEMANTIC_TYPE_BAG and tj == SEMANTIC_TYPE_PERSON)) else 0.0
-                            # Weapon-to-Object (W2O): weapon interacting with any non-person entity
-                            is_w2o = 1.0 if ((ti == SEMANTIC_TYPE_WEAPON and tj != SEMANTIC_TYPE_PERSON) or (tj == SEMANTIC_TYPE_WEAPON and ti != SEMANTIC_TYPE_PERSON)) else 0.0
-                            # 4 kinematic + 3 broad relational + 3 threat-aware relational = 10 dims
-                            edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0, is_p2p, is_p2o, is_o2o, is_p2w, is_p2b, is_w2o])
-                        else:
-                            # Legacy 4 kinematic + 3 relational = 7 dims
-                            edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0, is_p2p, is_p2o, is_o2o])
-                    else:
-                        # Non-semantic 4 dims: [dist, iou, rel_vel, persistence]
-                        edge_attrs.append([d.item(), iou.item(), rel_vel.item(), 1.0])
+        if self.use_semantic and sem_types is not None:
+            ti = sem_types[src_t].to(frame.device)
+            tj = sem_types[dst_t].to(frame.device)
+            ti_p = ti == SEMANTIC_TYPE_PERSON
+            tj_p = tj == SEMANTIC_TYPE_PERSON
+            is_p2p = (ti_p & tj_p).float()
+            is_p2o = (ti_p ^ tj_p).float()
+            is_o2o = ((~ti_p) & (~tj_p)).float()
 
-                    edges_src.append(i)
-                    edges_dst.append(j)
+            if self.semantic_schema_version == "threat5":
+                ti_w = ti == SEMANTIC_TYPE_WEAPON
+                tj_w = tj == SEMANTIC_TYPE_WEAPON
+                ti_b = ti == SEMANTIC_TYPE_BAG
+                tj_b = tj == SEMANTIC_TYPE_BAG
+                is_p2w = ((ti_p & tj_w) | (ti_w & tj_p)).float()
+                is_p2b = ((ti_p & tj_b) | (ti_b & tj_p)).float()
+                is_w2o = ((ti_w & (~tj_p)) | (tj_w & (~ti_p))).float()
+                edge_attr = torch.stack(
+                    [d_t, iou_t, rel_vel_t, persist_t, is_p2p, is_p2o, is_o2o, is_p2w, is_p2b, is_w2o],
+                    dim=-1,
+                )
+            else:
+                edge_attr = torch.stack(
+                    [d_t, iou_t, rel_vel_t, persist_t, is_p2p, is_p2o, is_o2o],
+                    dim=-1,
+                )
+        else:
+            edge_attr = torch.stack([d_t, iou_t, rel_vel_t, persist_t], dim=-1)
 
-        if not edges_src:
-            for i in range(n):
-                edges_src.append(i)
-                edges_dst.append(i)
-                if self.use_semantic and sem_types is not None:
-                    ti = int(sem_types[i].item() if hasattr(sem_types[i], 'item') else sem_types[i])
-                    is_p = 1.0 if ti == SEMANTIC_TYPE_PERSON else 0.0
-                    if self.semantic_schema_version == "threat5":
-                        is_w = 1.0 if ti == SEMANTIC_TYPE_WEAPON else 0.0
-                        edge_attrs.append([0.0, 1.0, 0.0, 1.0, is_p, 0.0, 1.0 - is_p, 0.0, 0.0, is_w])
-                    else:
-                        edge_attrs.append([0.0, 1.0, 0.0, 1.0, is_p, 0.0, 1.0 - is_p])
-                else:
-                    edge_attrs.append([0.0, 1.0, 0.0, 1.0])
-
-        src = torch.tensor(edges_src, device=frame.device, dtype=torch.long)
-        dst = torch.tensor(edges_dst, device=frame.device, dtype=torch.long)
-        edge_attr = torch.tensor(edge_attrs, device=frame.device, dtype=torch.float32)
-        return node_feats, (src, dst), edge_attr, boxes
+        return node_feats, (src_t, dst_t), edge_attr, boxes
 
 
 class EdgeGAT(nn.Module):
@@ -309,6 +301,8 @@ class EdgeGAT(nn.Module):
             return torch.zeros((0, self.heads * self.head_dim), device=x.device, dtype=x.dtype)
         h = self.proj(x).view(n, self.heads, self.head_dim)
         src, dst = edges
+        if src.numel() == 0:
+            return self.out_proj(h.view(n, -1))
 
         h_src = h[src]
         h_dst = h[dst]

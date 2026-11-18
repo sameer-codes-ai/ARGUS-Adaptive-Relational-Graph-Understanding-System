@@ -185,15 +185,22 @@ class ARGUS(nn.Module):
             "semantic_schema_version": self.cfg.semantic_schema_version,
         }
 
-    def _encode_frame(self, frame: torch.Tensor, prev_boxes: Optional[torch.Tensor] = None):
-        # 1. Visual Token Extraction
-        if self.backbone is not None:
-            patches, feat_maps = self.backbone(frame)
-            active_feat_map = feat_maps[self.backbone.token_stage_idx]
-        else:
-            p = self.patch_proj(frame.unsqueeze(0))
-            patches = p.flatten(2).transpose(1, 2)
-            active_feat_map = p
+    def _encode_frame(
+        self,
+        frame: torch.Tensor,
+        prev_boxes: Optional[torch.Tensor] = None,
+        patches: Optional[torch.Tensor] = None,
+        active_feat_map: Optional[torch.Tensor] = None,
+    ):
+        # 1. Visual Token Extraction (use pre-batched features when provided)
+        if patches is None or active_feat_map is None:
+            if self.backbone is not None:
+                patches, feat_maps = self.backbone(frame)
+                active_feat_map = feat_maps[self.backbone.token_stage_idx]
+            else:
+                p = self.patch_proj(frame.unsqueeze(0))
+                patches = p.flatten(2).transpose(1, 2)
+                active_feat_map = p
 
         if not self.cfg.use_graph:
             pruned, topk_scores, topk_idx = self.pruner(patches, graph_affinity=None)
@@ -256,6 +263,19 @@ class ARGUS(nn.Module):
             raise ValueError("streaming inference requires batch size 1")
         selected_batches, raw_scores = self.sampler.select(frames)
 
+        # Batch all selected frames through backbone/patch_proj once
+        all_selected = torch.cat(
+            [frames[i, selected_batches[i]] for i in range(b)],
+            dim=0,
+        )
+        if self.backbone is not None:
+            all_patches, all_feat_maps = self.backbone(all_selected)
+            all_active_feat_maps = all_feat_maps[self.backbone.token_stage_idx]
+        else:
+            all_p = self.patch_proj(all_selected)
+            all_patches = all_p.flatten(2).transpose(1, 2)
+            all_active_feat_maps = all_p
+
         batch_tokens = []
         batch_boxes = []
         batch_saliencies = []
@@ -266,6 +286,7 @@ class ARGUS(nn.Module):
         batch_edge_indices = []
         batch_edge_attrs = []
 
+        offset = 0
         for i in range(b):
             chosen = selected_batches[i]
             prev_boxes = None
@@ -280,7 +301,15 @@ class ARGUS(nn.Module):
             clip_edge_attrs = []
 
             for frame_idx in chosen:
-                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(frames[i, frame_idx], prev_boxes)
+                f_patches = all_patches[offset:offset + 1]
+                f_feat_map = all_active_feat_maps[offset:offset + 1]
+                offset += 1
+                f_token, boxes, saliency, node_emb, det_res, edges, edge_attr = self._encode_frame(
+                    frames[i, frame_idx],
+                    prev_boxes,
+                    patches=f_patches,
+                    active_feat_map=f_feat_map,
+                )
                 prev_boxes = boxes.detach()
                 clip_tokens.append(f_token)
                 clip_boxes.append(boxes)

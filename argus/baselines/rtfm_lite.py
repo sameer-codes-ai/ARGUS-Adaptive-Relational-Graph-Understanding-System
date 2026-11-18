@@ -122,6 +122,8 @@ class RTFMLite(nn.Module):
         if frames.ndim != 5 or frames.shape[2] != 3:
             raise ValueError("frames must have shape (B, T, 3, H, W)")
         b, t, c, h, w = frames.shape
+        if b == 0 or t == 0:
+            raise ValueError("frames must contain at least one batch item and one frame")
 
         flat_frames = frames.view(b * t, c, h, w)
 
@@ -136,13 +138,13 @@ class RTFMLite(nn.Module):
 
         # Multi-scale temporal aggregation
         temporal_feats = self.mtn(frame_feats)
-        self.last_temporal_features = temporal_feats
+        self.last_temporal_features = temporal_feats if torch.is_grad_enabled() else None
 
         # Compute anomaly scores
         scores = self.classifier(temporal_feats).squeeze(-1)  # (B, T)
 
         valid_mask = torch.ones((b, t), dtype=torch.bool, device=frames.device)
-        selected_batches = [list(range(t)) for _ in range(b)]
+        selected_batches = [torch.arange(t, device=frames.device, dtype=torch.long) for _ in range(b)]
         empty_boxes = [[torch.empty((0, 4), device=frames.device) for _ in range(t)] for _ in range(b)]
 
         return ARGUSOutput(

@@ -37,15 +37,16 @@ class AdaptiveSampler(nn.Module):
         spatial_energy = (grad_x + grad_y)[:, 1:]
 
         # Histogram-based temporal entropy (32-bin Shannon entropy)
+        # Accumulate in float32 to prevent float16 overflow when H*W > 65504.
         bins = 32
         quantized = (gray[:, 1:] * (bins - 1)).long().clamp(0, bins - 1)
         flat_q = quantized.flatten(2)  # (B, T-1, H*W)
-        hist = torch.zeros(b, t - 1, bins, device=frames.device, dtype=frames.dtype)
-        hist.scatter_add_(2, flat_q, torch.ones_like(flat_q, dtype=frames.dtype))
+        hist = torch.zeros(b, t - 1, bins, device=frames.device, dtype=torch.float32)
+        hist.scatter_add_(2, flat_q, torch.ones_like(flat_q, dtype=torch.float32))
         p = hist / hist.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         entropy = -(p * (p + 1e-8).log()).sum(dim=-1)  # (B, T-1)
         entropy_std = entropy.std(dim=-1, keepdim=True, unbiased=False)
-        entropy = (entropy - entropy.mean(dim=-1, keepdim=True)) / (entropy_std + 1e-6)
+        entropy = ((entropy - entropy.mean(dim=-1, keepdim=True)) / (entropy_std + 1e-6)).to(dtype=frames.dtype)
 
         hist_diff = (gray[:, 1:] - gray[:, :-1]).pow(2).mean(dim=(-1, -2))
 
@@ -61,17 +62,18 @@ class AdaptiveSampler(nn.Module):
             scores = torch.ones((b, t), device=frames.device, dtype=frames.dtype)
             return selected_batches, scores
         scores = self.importance_scores(frames)
+        above_thresh = (scores >= self.threshold).cpu().tolist()
         selected_batches = []
         for i in range(b):
             chosen = [0]
             last = 0
+            row = above_thresh[i]
             for k in range(1, t):
                 gap = k - last
-                is_above = bool((scores[i, k] >= self.threshold).item())
-                if is_above or gap >= self.max_gap or k == t - 1:
+                if row[k] or gap >= self.max_gap or k == t - 1:
                     chosen.append(k)
                     last = k
-            selected_batches.append(torch.tensor(sorted(list(set(chosen))), device=frames.device, dtype=torch.long))
+            selected_batches.append(torch.tensor(chosen, device=frames.device, dtype=torch.long))
         return selected_batches, scores
 
     def compute_attention_modulation(

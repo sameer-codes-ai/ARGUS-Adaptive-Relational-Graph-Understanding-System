@@ -124,6 +124,7 @@ class SpatialBackbone(nn.Module):
         self.name = name
         self.out_dim = out_dim
         self.use_timm = False
+        self._frozen = False
 
         self.pretrained_requested = pretrained
         self.fallback_reason: Optional[str] = None
@@ -134,11 +135,14 @@ class SpatialBackbone(nn.Module):
             import timm
             self.model = timm.create_model(name, pretrained=pretrained, features_only=True)
             self.use_timm = True
+            self.model.eval()
             with torch.no_grad():
                 dummy = torch.randn(1, 3, 128, 128)
                 feats = self.model(dummy)
                 self.stage_dims = [f.shape[1] for f in feats]
                 self.stage_strides = [128 // max(f.shape[2], 1) for f in feats]
+            if not frozen:
+                self.model.train()
             self.token_stage_idx = len(self.stage_dims) - 1
             for i, s in enumerate(self.stage_strides):
                 if s == 16:
@@ -184,13 +188,23 @@ class SpatialBackbone(nn.Module):
 
     def freeze(self):
         """Freeze backbone weights so only token projection head trains."""
+        self._frozen = True
         for p in self.model.parameters():
             p.requires_grad = False
+        self.model.eval()
 
     def unfreeze(self):
         """Unfreeze backbone for end-to-end fine-tuning."""
+        self._frozen = False
         for p in self.model.parameters():
             p.requires_grad = True
+        self.model.train(self.training)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if getattr(self, "_frozen", False):
+            self.model.eval()
+        return self
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """

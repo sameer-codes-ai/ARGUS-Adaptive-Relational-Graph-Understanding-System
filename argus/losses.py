@@ -41,6 +41,8 @@ def anomaly_loss(
     mil_weight=0.5,
     valid_mask=None,
 ):
+    pred_scores = pred_scores.float()
+    targets = targets.float().view(-1)
     if valid_mask is None:
         valid_mask = torch.ones_like(pred_scores, dtype=torch.bool)
     if valid_mask.shape != pred_scores.shape or not valid_mask.any(dim=1).all():
@@ -48,7 +50,7 @@ def anomaly_loss(
     # Clamp to avoid numerical precision errors (e.g. > 1.0 or log(0) in BCE)
     masked_scores = pred_scores.masked_fill(~valid_mask, float('-inf'))
     video_scores = masked_scores.max(dim=1).values.clamp(1e-6, 1.0 - 1e-6)
-    bce = F.binary_cross_entropy(video_scores, targets.float())
+    bce = F.binary_cross_entropy(video_scores, targets)
 
     if pred_scores.shape[1] > 1:
         pair_mask = valid_mask[:, 1:] & valid_mask[:, :-1]
@@ -118,9 +120,12 @@ def compute_model_loss(
             valid_mask=out.valid_mask,
         )
         temp_feats = getattr(model, "last_temporal_features", None)
+        if model is not None and hasattr(model, "last_temporal_features"):
+            model.last_temporal_features = None
         if temp_feats is not None:
-            abn_mask = (targets == 1.0)
-            norm_mask = (targets == 0.0)
+            flat_targets = targets.float().view(-1)
+            abn_mask = (flat_targets == 1.0)
+            norm_mask = (flat_targets == 0.0)
             if abn_mask.any() and norm_mask.any() and mil_weight > 0.0:
                 norm_f = temp_feats[norm_mask]
                 abn_f = temp_feats[abn_mask]

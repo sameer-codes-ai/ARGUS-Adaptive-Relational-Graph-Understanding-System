@@ -116,7 +116,7 @@ class RoIFeatureExtractor(nn.Module):
 
         n = boxes.shape[0]
         if n == 0:
-            return torch.zeros((0, self.out_dim), device=feature_map.device)
+            return torch.zeros((0, self.out_dim), device=feature_map.device, dtype=feature_map.dtype)
 
         # Build grid for each box: map [x1, y1, x2, y2] in [0, 1] to [-1, 1]
         # x_norm = 2 * x - 1
@@ -130,7 +130,7 @@ class RoIFeatureExtractor(nn.Module):
         gx = gx.expand(n, self.pool_size, self.pool_size)
         gy = gy.expand(n, self.pool_size, self.pool_size)
 
-        grid = torch.stack([gx * 2.0 - 1.0, gy * 2.0 - 1.0], dim=-1)  # (N, P, P, 2)
+        grid = torch.stack([gx * 2.0 - 1.0, gy * 2.0 - 1.0], dim=-1).to(dtype=feature_map.dtype)  # (N, P, P, 2)
 
         # Expand feature_map to (N, C, H, W)
         f_expanded = feature_map.expand(n, -1, -1, -1)
@@ -218,9 +218,9 @@ class SemanticDetector(nn.Module):
             return self._empty(frame.device)
 
         det = results[0].boxes
-        boxes_px = det.xyxy.float()
-        scores = det.conf.float()
-        cids = det.cls.long()
+        boxes_px = det.xyxy.float().to(frame.device)
+        scores = det.conf.float().to(frame.device)
+        cids = det.cls.long().to(frame.device)
 
         boxes_norm = boxes_px.clone()
         boxes_norm[:, [0, 2]] /= w

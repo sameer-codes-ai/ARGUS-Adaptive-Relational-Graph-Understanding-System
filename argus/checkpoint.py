@@ -44,11 +44,12 @@ class IncompatibleCheckpointError(RuntimeError):
 def validate_component_metadata(checkpoint: Mapping, model, *, allow_partial: bool = False) -> None:
     saved = checkpoint.get("components")
 
+    cfg_meta = checkpoint.get("config")
     # Check semantic schema version and EdgeGAT input dimensions FIRST
     saved_schema = (
         checkpoint.get("semantic_schema_version")
-        or (saved.get("semantic_schema_version") if saved else None)
-        or checkpoint.get("config", {}).get("semantic_schema_version")
+        or (saved.get("semantic_schema_version") if isinstance(saved, Mapping) else None)
+        or (cfg_meta.get("semantic_schema_version") if isinstance(cfg_meta, Mapping) else None)
     )
     current_schema = getattr(getattr(model, "cfg", None), "semantic_schema_version", "threat5")
 

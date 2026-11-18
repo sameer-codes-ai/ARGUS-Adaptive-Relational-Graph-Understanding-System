@@ -192,7 +192,7 @@ class AlertDispatcher:
                         dst_l = dst.tolist() if hasattr(dst, 'tolist') else list(dst)
                         seen_pairs = set()
                         for u, v in zip(src_l, dst_l):
-                            if u == v or u >= len(sems_list) or v >= len(sems_list):
+                            if u == v or u < 0 or v < 0 or u >= len(sems_list) or v >= len(sems_list):
                                 continue
                             pair = (min(u, v), max(u, v))
                             if pair in seen_pairs:
@@ -478,7 +478,7 @@ def generate_dashboard_html(
                 <div><strong>Bag Findings:</strong> {event.bag_count} bag(s) tracked</div>
                 <div><strong>Inference Latency:</strong> {latency_ms:.1f} ms / clip</div>
                 <div><strong>Classification Verdict:</strong> <span style="color: {status_color}; font-weight: 600;">{status_text}</span></div>
-                {f'<div style="margin-top:8px;padding:8px 12px;background:rgba(244,63,94,0.12);border-radius:6px;border:1px solid rgba(244,63,94,0.3);color:#fb7185;"><strong>Evidence Details:</strong> {", ".join(event.evidence_details)}</div>' if event.evidence_details else ''}
+                {f'<div style="margin-top:8px;padding:8px 12px;background:rgba(244,63,94,0.12);border-radius:6px;border:1px solid rgba(244,63,94,0.3);color:#fb7185;"><strong>Evidence Details:</strong> {", ".join(html.escape(str(d), quote=True) for d in event.evidence_details)}</div>' if event.evidence_details else ''}
             </div>
         </div>
     </div>

@@ -29,7 +29,8 @@ def find_frame_files(dir_path: Path) -> list[Path]:
     return frame_files
 
 
-_DIR_FRAME_CACHE: dict[Path, dict[str, list[Path]]] = {}
+_DIR_FRAME_CACHE: dict[Path, tuple[int, dict[str, list[Path]]]] = {}
+_DIR_FRAME_CACHE_MAX = 64
 
 
 def load_clip_from_path(
@@ -45,7 +46,9 @@ def load_clip_from_path(
     if not path.exists():
         parent = path.parent
         if parent.is_dir():
-            if parent not in _DIR_FRAME_CACHE:
+            mtime_ns = parent.stat().st_mtime_ns
+            cached = _DIR_FRAME_CACHE.get(parent)
+            if cached is None or cached[0] != mtime_ns:
                 index: dict[str, list[Path]] = {}
                 for f in parent.iterdir():
                     if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
@@ -53,10 +56,13 @@ def load_clip_from_path(
                         index.setdefault(pfx, []).append(f)
                 for pfx in index:
                     index[pfx].sort(key=natural_sort_key)
-                _DIR_FRAME_CACHE[parent] = index
+                if parent not in _DIR_FRAME_CACHE and len(_DIR_FRAME_CACHE) >= _DIR_FRAME_CACHE_MAX:
+                    _DIR_FRAME_CACHE.pop(next(iter(_DIR_FRAME_CACHE)))
+                _DIR_FRAME_CACHE[parent] = (mtime_ns, index)
+                cached = (mtime_ns, index)
             candidate_pfx = path.stem if path.suffix else path.name
-            if candidate_pfx in _DIR_FRAME_CACHE[parent]:
-                prefix_files = _DIR_FRAME_CACHE[parent][candidate_pfx]
+            if candidate_pfx in cached[1]:
+                prefix_files = cached[1][candidate_pfx]
         if prefix_files is None:
             raise FileNotFoundError(f"Media path not found: {path}")
 
@@ -117,23 +123,34 @@ def load_clip_from_path(
 
     elif path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
         cap = cv2.VideoCapture(str(path))
-        if not cap.isOpened():
-            raise ValueError(f"Failed to open video file: {path}")
+        try:
+            if not cap.isOpened():
+                raise ValueError(f"Failed to open video file: {path}")
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 0 and total_frames >= target_frames:
-            target_indices = set(torch.linspace(0, total_frames - 1, target_frames).long().tolist())
-        else:
-            target_indices = None
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames > 0 and total_frames >= target_frames:
+                target_indices = set(torch.linspace(0, total_frames - 1, target_frames).long().tolist())
+            else:
+                target_indices = None
 
-        raw = []
-        reservoir_rng = random.Random(0)
-        frame_idx = 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if target_indices is None or frame_idx in target_indices:
+            raw = []
+            reservoir_rng = random.Random(0)
+            frame_idx = 0
+            while True:
+                if target_indices is not None:
+                    if not cap.grab():
+                        break
+                    if frame_idx not in target_indices:
+                        frame_idx += 1
+                        continue
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        break
+                else:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+
                 if frame.shape[0] != image_size or frame.shape[1] != image_size:
                     interp = cv2.INTER_AREA if frame.shape[0] > image_size else cv2.INTER_LINEAR
                     frame = cv2.resize(frame, (image_size, image_size), interpolation=interp)
@@ -151,10 +168,11 @@ def load_clip_from_path(
                             raw[replacement] = tensor_frame
                 else:
                     raw.append(tensor_frame)
-            frame_idx += 1
-            if target_indices and len(raw) >= target_frames:
-                break
-        cap.release()
+                frame_idx += 1
+                if target_indices and len(raw) >= target_frames:
+                    break
+        finally:
+            cap.release()
 
         if not raw:
             raise ValueError(f"No frames could be read from video file: {path}")
@@ -224,7 +242,13 @@ class VideoManifest(Dataset):
                 raise ValueError("Manifest must contain one of: path, filepath, video_path")
             for row_number, row in enumerate(reader, start=2):
                 p = row.get('path') or row.get('filepath') or row.get('video_path')
-                lbl = row.get('label') or row.get('target') or row.get('anomaly', 0)
+                lbl = row.get('label')
+                if lbl is None or str(lbl).strip() == '':
+                    lbl = row.get('target')
+                if lbl is None or str(lbl).strip() == '':
+                    lbl = row.get('anomaly')
+                if lbl is None or str(lbl).strip() == '':
+                    lbl = 0
                 if p:
                     media_path = Path(p)
                     if not media_path.is_absolute():
@@ -238,8 +262,8 @@ class VideoManifest(Dataset):
                     self.records.append({
                         'path': str(media_path),
                         'label': label_value,
-                        'dataset': row.get('dataset', 'unknown'),
-                        'category': row.get('category', 'unknown'),
+                        'dataset': row.get('dataset') or 'unknown',
+                        'category': row.get('category') or 'unknown',
                     })
 
         if not self.records:
