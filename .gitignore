@@ -37,3 +37,7 @@ outputs/web_uploads/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Documentation & drafts excluded from public release
+docs/
+

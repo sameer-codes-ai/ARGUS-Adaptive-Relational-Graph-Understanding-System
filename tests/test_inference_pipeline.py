@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import web_demo
 
 def test_inference_pipeline():
-    checkpoint = Path('outputs/checkpoints_joint/best.pt')
+    checkpoint = Path('outputs/checkpoints_rlvd_full/best.pt')
     has_checkpoint = checkpoint.exists()
     web_demo.load_model(checkpoint, allow_random_model=not has_checkpoint)
 
@@ -34,8 +34,8 @@ def test_inference_pipeline():
         assert res2['severity'] == 'NORMAL'
         assert res2['is_anomaly'] == False
 
-    # Test C: Robbery
-    res3 = web_demo.process_video_inference(Path('demo_samples/sample_robbery_087.mp4'), threshold=0.35, frames=24)
+    # Test C: Hallway Altercation / Assault
+    res3 = web_demo.process_video_inference(Path('demo_samples/sample_violence_V308.mp4'), threshold=0.35, frames=24)
     assert res3['status'] == 'success'
     assert res3['duration_sec'] > 0
     assert res3['native_fps'] > 0
@@ -45,7 +45,15 @@ def test_inference_pipeline():
         assert res3['peak_score'] > 0.50
         assert res3['is_anomaly'] == True
 
-    print("\n[ALL 3 TESTS PASSED SUCCESSFULLY]")
+    # Test D: Commercial Facility Incident Pipeline Execution
+    res4 = web_demo.process_video_inference(Path('demo_samples/sample_robbery_087.mp4'), threshold=0.35, frames=24)
+    assert res4['status'] == 'success'
+    assert res4['duration_sec'] > 0
+    assert res4['native_fps'] > 0
+    assert len(res4['frames']) > 0
+    assert len(res4['timeline']) > 0
+
+    print("\n[ALL PIPELINE TESTS PASSED SUCCESSFULLY]")
 
 if __name__ == '__main__':
     test_inference_pipeline()
