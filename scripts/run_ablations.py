@@ -193,7 +193,10 @@ def run_training_for_variant(
     ] + (["--eco-mode"] if eco_mode else []) + (["--device", device] if device else []) + (["--max-batches", str(max_batches)] if max_batches else [])
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{TEST_DEPS};{PROJECT_ROOT}"
+    pp_parts = [str(TEST_DEPS), str(PROJECT_ROOT)]
+    if env.get("PYTHONPATH"):
+        pp_parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pp_parts)
 
     print("\n" + "=" * 70)
     print(f"  LAUNCHING TRAINING FOR: {variant}")
@@ -268,7 +271,10 @@ def evaluate_variant(
         cmd.extend(["--device", device])
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{TEST_DEPS};{PROJECT_ROOT}"
+    pp_parts = [str(TEST_DEPS), str(PROJECT_ROOT)]
+    if env.get("PYTHONPATH"):
+        pp_parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pp_parts)
 
     res = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if res.returncode == 0 and eval_json.is_file():

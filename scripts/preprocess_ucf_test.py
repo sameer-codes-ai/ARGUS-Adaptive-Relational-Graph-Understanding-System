@@ -12,10 +12,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing as mp
 import os
 from pathlib import Path
 import sys
+import tempfile
 import time
 
 # Ensure project root and .testdeps are in sys.path
@@ -32,7 +34,9 @@ import torch
 from tqdm import tqdm
 
 
-def process_single_video_task(task: tuple[str, str, str, list[tuple[int, str]]]) -> tuple[bool, str, int, str]:
+def process_single_video_task(
+    task: tuple[str, str, str, list[tuple[int, str]]],
+) -> tuple[bool, str, int, str, dict | None]:
     """
     Load all frame PNGs for an individual test video, stack into a single uint8 tensor (N, 3, H, W),
     and save atomically with metadata.
@@ -43,10 +47,10 @@ def process_single_video_task(task: tuple[str, str, str, list[tuple[int, str]]])
     try:
         # Sort by frame index to guarantee exact temporal order
         sorted_entries = sorted(frame_entries, key=lambda x: x[0])
-        frame_indices = [idx for idx, _ in sorted_entries]
 
         frames = []
-        for _, p_str in sorted_entries:
+        valid_frame_indices = []
+        for idx, p_str in sorted_entries:
             img = cv2.imread(p_str)
             if img is None:
                 continue
@@ -54,27 +58,37 @@ def process_single_video_task(task: tuple[str, str, str, list[tuple[int, str]]])
             # Store as uint8 tensor (3, H, W)
             tensor_frame = torch.from_numpy(rgb).permute(2, 0, 1)
             frames.append(tensor_frame)
+            valid_frame_indices.append(idx)
 
         if not frames:
-            return False, stem, 0, "No valid frames could be read"
+            return False, stem, 0, "No valid frames could be read", None
 
         # Stack into (N, 3, H, W) uint8 tensor
         video_tensor = torch.stack(frames, dim=0)
 
         payload = {
             "frames": video_tensor,
-            "frame_indices": frame_indices,
+            "frame_indices": valid_frame_indices,
             "stem": stem,
             "category": category,
             "num_frames": len(frames),
         }
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(payload, out_path)
-        return True, stem, len(frames), ""
+        tmp_path = out_path.with_suffix(".pt.tmp")
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, out_path)
+
+        meta = {
+            "category": category,
+            "pt_path": str(out_path),
+            "frame_indices": valid_frame_indices,
+            "num_frames": len(frames),
+        }
+        return True, stem, len(frames), "", meta
 
     except Exception as exc:
-        return False, stem, 0, str(exc)
+        return False, stem, 0, str(exc), None
 
 
 def parse_args():
@@ -162,25 +176,41 @@ def main():
     success_count = 0
     total_frames_saved = 0
     failures = []
+    ucf_index: dict[str, dict] = {}
 
     if workers <= 1:
         for t in tqdm(tasks, desc="Packaging Videos", dynamic_ncols=True):
-            ok, name, n_f, err = process_single_video_task(t)
-            if ok:
+            ok, name, n_f, err, meta = process_single_video_task(t)
+            if ok and meta is not None:
                 success_count += 1
                 total_frames_saved += n_f
+                ucf_index[name] = meta
             else:
                 failures.append((name, err))
     else:
         with mp.Pool(processes=workers) as pool:
             results = list(tqdm(pool.imap_unordered(process_single_video_task, tasks, chunksize=5),
                                 total=len(tasks), desc="Packaging Videos", dynamic_ncols=True))
-        for ok, name, n_f, err in results:
-            if ok:
+        for ok, name, n_f, err, meta in results:
+            if ok and meta is not None:
                 success_count += 1
                 total_frames_saved += n_f
+                ucf_index[name] = meta
             else:
                 failures.append((name, err))
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_idx_name = tempfile.mkstemp(
+        dir=str(args.output_dir), prefix=".ucf_test_index_", suffix=".json.tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(ucf_index, f, indent=2)
+        os.replace(tmp_idx_name, idx_path)
+    except BaseException:
+        if os.path.exists(tmp_idx_name):
+            os.unlink(tmp_idx_name)
+        raise
 
     elapsed = time.perf_counter() - start_time
     total_size_bytes = sum(f.stat().st_size for f in args.output_dir.rglob("*.pt") if f.is_file())

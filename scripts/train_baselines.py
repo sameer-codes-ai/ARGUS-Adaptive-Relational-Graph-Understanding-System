@@ -108,7 +108,7 @@ def main():
 
         cmd = [
             sys.executable,
-            "train.py",
+            str(PROJECT_ROOT / "train.py"),
             "--model-type", model_name,
             "--manifest", str(args.train_manifest),
             "--val-manifest", str(args.val_manifest),
@@ -121,11 +121,10 @@ def main():
             cmd.extend(["--max-batches", str(args.max_batches)])
 
         env = os.environ.copy()
-        testdeps = str(PROJECT_ROOT / ".testdeps")
-        if "PYTHONPATH" in env:
-            env["PYTHONPATH"] = f"{testdeps};{env['PYTHONPATH']}"
-        else:
-            env["PYTHONPATH"] = testdeps
+        pp_parts = [str(PROJECT_ROOT / ".testdeps"), str(PROJECT_ROOT)]
+        if env.get("PYTHONPATH"):
+            pp_parts.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(pp_parts)
 
         t0 = time.perf_counter()
         ret = subprocess.run(cmd, env=env)

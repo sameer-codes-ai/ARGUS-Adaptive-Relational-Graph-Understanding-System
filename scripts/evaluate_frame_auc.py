@@ -165,63 +165,57 @@ def evaluate_single_video(
     if num_frames == 0:
         return np.array([], dtype=np.float32)
 
-    # Handle videos shorter than clip_len
-    if num_frames < clip_len:
-        pad_count = clip_len - num_frames
-        pad_frames = frames_tensor[-1:].repeat(pad_count, 1, 1, 1)
-        padded_clip = torch.cat([frames_tensor, pad_frames], dim=0).unsqueeze(0).to(device)
-        with torch.no_grad():
-            out = model(padded_clip, stream=streaming, stream_id=stream_id)
-            raw_idx = out.sampled_indices[0]
-            sel_idx = raw_idx.detach().cpu().numpy() if isinstance(raw_idx, torch.Tensor) else np.asarray(raw_idx)
-            sel_scores = out.scores[0].detach().cpu().numpy()
-            if len(sel_idx) == 0:
-                short_scores = np.zeros(clip_len, dtype=np.float32)
-            elif len(sel_idx) == 1:
-                short_scores = np.full(clip_len, sel_scores[0], dtype=np.float32)
-            else:
-                short_scores = np.interp(np.arange(clip_len), sel_idx, sel_scores)
-        return short_scores[:num_frames]
+    def _interp_clip_scores(raw_idx, raw_scores) -> np.ndarray:
+        sel_idx = raw_idx.detach().cpu().numpy() if isinstance(raw_idx, torch.Tensor) else np.asarray(raw_idx)
+        sel_scores = raw_scores.detach().cpu().numpy() if isinstance(raw_scores, torch.Tensor) else np.asarray(raw_scores)
+        if len(sel_idx) == 0:
+            return np.zeros(clip_len, dtype=np.float32)
+        if len(sel_idx) == 1:
+            return np.full(clip_len, sel_scores[0], dtype=np.float32)
+        order = np.argsort(sel_idx, kind="mergesort")
+        return np.interp(np.arange(clip_len), sel_idx[order], sel_scores[order])
 
-    # Generate sliding window start indices
-    window_starts = list(range(0, num_frames - clip_len + 1, stride))
-    # Ensure the tail frames of the video are covered
-    if window_starts[-1] + clip_len < num_frames:
-        window_starts.append(num_frames - clip_len)
+    try:
+        # Handle videos shorter than clip_len
+        if num_frames < clip_len:
+            pad_count = clip_len - num_frames
+            pad_frames = frames_tensor[-1:].repeat(pad_count, 1, 1, 1)
+            padded_clip = torch.cat([frames_tensor, pad_frames], dim=0).unsqueeze(0).to(device)
+            with torch.no_grad():
+                out = model(padded_clip, stream=streaming, stream_id=stream_id)
+                short_scores = _interp_clip_scores(out.sampled_indices[0], out.scores[0])
+            return np.clip(short_scores[:num_frames], 0.0, 1.0)
 
-    accum_scores = np.zeros(num_frames, dtype=np.float32)
-    accum_counts = np.zeros(num_frames, dtype=np.float32)
-    if aggregation == "max":
-        accum_scores.fill(-1e9)
+        # Generate sliding window start indices
+        window_starts = list(range(0, num_frames - clip_len + 1, stride))
+        # Ensure the tail frames of the video are covered
+        if window_starts[-1] + clip_len < num_frames:
+            window_starts.append(num_frames - clip_len)
 
-    for start_idx in window_starts:
-        clip = frames_tensor[start_idx : start_idx + clip_len].unsqueeze(0).to(device)
+        accum_scores = np.zeros(num_frames, dtype=np.float32)
+        accum_counts = np.zeros(num_frames, dtype=np.float32)
+        if aggregation == "max":
+            accum_scores.fill(-1e9)
 
-        with torch.no_grad():
-            out = model(clip, stream=streaming, stream_id=stream_id)
-            raw_idx = out.sampled_indices[0]
-            sel_idx = raw_idx.detach().cpu().numpy() if isinstance(raw_idx, torch.Tensor) else np.asarray(raw_idx)
-            sel_scores = out.scores[0].detach().cpu().numpy()
+        for start_idx in window_starts:
+            clip = frames_tensor[start_idx : start_idx + clip_len].unsqueeze(0).to(device)
 
-            if len(sel_idx) == 0:
-                w_scores = np.zeros(clip_len, dtype=np.float32)
-            elif len(sel_idx) == 1:
-                w_scores = np.full(clip_len, sel_scores[0], dtype=np.float32)
-            else:
-                w_scores = np.interp(np.arange(clip_len), sel_idx, sel_scores)
+            with torch.no_grad():
+                out = model(clip, stream=streaming, stream_id=stream_id)
+                w_scores = _interp_clip_scores(out.sampled_indices[0], out.scores[0])
 
-        if aggregation == "mean":
-            accum_scores[start_idx : start_idx + clip_len] += w_scores
-            accum_counts[start_idx : start_idx + clip_len] += 1.0
-        elif aggregation == "max":
-            accum_scores[start_idx : start_idx + clip_len] = np.maximum(
-                accum_scores[start_idx : start_idx + clip_len], w_scores
-            )
-            accum_counts[start_idx : start_idx + clip_len] = 1.0
-
-    # Reset streaming FIFO memory after finishing this video stream
-    if streaming and hasattr(model, "memory"):
-        model.memory.reset(stream_id=stream_id)
+            if aggregation == "mean":
+                accum_scores[start_idx : start_idx + clip_len] += w_scores
+                accum_counts[start_idx : start_idx + clip_len] += 1.0
+            elif aggregation == "max":
+                accum_scores[start_idx : start_idx + clip_len] = np.maximum(
+                    accum_scores[start_idx : start_idx + clip_len], w_scores
+                )
+                accum_counts[start_idx : start_idx + clip_len] = 1.0
+    finally:
+        # Reset streaming FIFO memory after finishing this video stream
+        if streaming and hasattr(model, "memory") and model.memory is not None:
+            model.memory.reset(stream_id=stream_id)
 
     if aggregation == "mean":
         final_scores = accum_scores / np.maximum(accum_counts, 1.0)
@@ -307,6 +301,12 @@ def parse_args(args: list[str] | None = None):
         default=None,
         help="Optional YAML config file to override model inference settings (e.g. for ablations).",
     )
+    parser.add_argument(
+        "--allow-unsafe-checkpoint",
+        action="store_true",
+        default=False,
+        help="Allow unsafe pickle checkpoint loading.",
+    )
     return parser.parse_args(args)
 
 
@@ -352,7 +352,7 @@ def main():
     print(f"[INFO] Loaded ground truth for {len(valid_videos)} test videos with extracted frames.")
 
     # 2. Load Model & Config
-    state = load_checkpoint(args.checkpoint, map_location=device, allow_unsafe=True)
+    state = load_checkpoint(args.checkpoint, map_location=device, allow_unsafe=args.allow_unsafe_checkpoint)
     saved_cfg = dict(state.get("config", {}) or {}) if isinstance(state, dict) else {}
     if args.config is not None:
         if not args.config.exists():
@@ -364,7 +364,7 @@ def main():
             saved_cfg.update(yaml_cfg["model"])
     cfg = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
 
-    model_type = state.get('model_type') or state.get('components', {}).get('model_type', 'argus')
+    model_type = state.get("model_type") or (state.get("components") or {}).get("model_type", "argus")
     model = build_model(model_type=model_type, config=cfg).to(device)
     validate_component_metadata(state, model)
     model.load_state_dict(model_state_dict(state))
@@ -396,11 +396,13 @@ def main():
         if "pt_path" in v_info and Path(v_info["pt_path"]).is_file():
             pt_data = torch.load(v_info["pt_path"], map_location="cpu", weights_only=True)
             frames_tensor = pt_data["frames"] if isinstance(pt_data, dict) else pt_data
-            if frames_tensor.shape[-1] != cfg.image_size:
-                import torch.nn.functional as F
-                frames_tensor = F.interpolate(frames_tensor.float() / 255.0, size=(cfg.image_size, cfg.image_size), mode="bilinear", align_corners=False)
-            else:
+            if not frames_tensor.is_floating_point():
                 frames_tensor = frames_tensor.float() / 255.0
+            else:
+                frames_tensor = frames_tensor.float()
+            if frames_tensor.shape[-2:] != (cfg.image_size, cfg.image_size):
+                import torch.nn.functional as F
+                frames_tensor = F.interpolate(frames_tensor, size=(cfg.image_size, cfg.image_size), mode="bilinear", align_corners=False)
         else:
             frames_tensor = load_video_frames(frame_entries, image_size=cfg.image_size)
         if frames_tensor.shape[0] == 0:

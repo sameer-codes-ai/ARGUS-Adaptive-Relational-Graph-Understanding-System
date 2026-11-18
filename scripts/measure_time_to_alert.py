@@ -47,6 +47,7 @@ def measure_time_to_alert(
     device: str = "cpu",
     output_json: Path | None = None,
     max_videos: int | None = None,
+    allow_unsafe: bool = False,
 ) -> dict:
     device = torch.device(device)
     print("=" * 65)
@@ -69,10 +70,10 @@ def measure_time_to_alert(
     print(f"[INFO] Evaluating TTA on {len(anom_videos)} anomalous test videos with annotated onset intervals.")
 
     # 2. Load Model
-    state = load_checkpoint(checkpoint_path, map_location=device, allow_unsafe=True)
+    state = load_checkpoint(checkpoint_path, map_location=device, allow_unsafe=allow_unsafe)
     saved_cfg = state.get("config", {})
     cfg = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
-    model_type = state.get("model_type") or state.get("components", {}).get("model_type", "argus")
+    model_type = state.get("model_type") or (state.get("components") or {}).get("model_type", "argus")
     model = build_model(model_type=model_type, config=cfg).to(device)
     validate_component_metadata(state, model)
     model.load_state_dict(model_state_dict(state))
@@ -94,11 +95,13 @@ def measure_time_to_alert(
         if "pt_path" in v_info and Path(v_info["pt_path"]).is_file():
             pt_data = torch.load(v_info["pt_path"], map_location="cpu", weights_only=True)
             frames_tensor = pt_data["frames"] if isinstance(pt_data, dict) else pt_data
-            if frames_tensor.shape[-1] != cfg.image_size:
-                import torch.nn.functional as F
-                frames_tensor = F.interpolate(frames_tensor.float() / 255.0, size=(cfg.image_size, cfg.image_size), mode="bilinear", align_corners=False)
-            else:
+            if not frames_tensor.is_floating_point():
                 frames_tensor = frames_tensor.float() / 255.0
+            else:
+                frames_tensor = frames_tensor.float()
+            if frames_tensor.shape[-2:] != (cfg.image_size, cfg.image_size):
+                import torch.nn.functional as F
+                frames_tensor = F.interpolate(frames_tensor, size=(cfg.image_size, cfg.image_size), mode="bilinear", align_corners=False)
         else:
             frames_tensor = load_video_frames(frame_entries, image_size=cfg.image_size)
         if frames_tensor.shape[0] == 0:
@@ -173,11 +176,11 @@ def measure_time_to_alert(
             )
 
     # Compute Statistics
-    mean_tta_ms = float(np.mean(tta_ms_list)) if tta_ms_list else float("nan")
-    median_tta_ms = float(np.median(tta_ms_list)) if tta_ms_list else float("nan")
-    p90_tta_ms = float(np.percentile(tta_ms_list, 90)) if tta_ms_list else float("nan")
-    min_tta_ms = float(np.min(tta_ms_list)) if tta_ms_list else float("nan")
-    max_tta_ms = float(np.max(tta_ms_list)) if tta_ms_list else float("nan")
+    mean_tta_ms = round(float(np.mean(tta_ms_list)), 1) if tta_ms_list else None
+    median_tta_ms = round(float(np.median(tta_ms_list)), 1) if tta_ms_list else None
+    p90_tta_ms = round(float(np.percentile(tta_ms_list, 90)), 1) if tta_ms_list else None
+    min_tta_ms = round(float(np.min(tta_ms_list)), 1) if tta_ms_list else None
+    max_tta_ms = round(float(np.max(tta_ms_list)), 1) if tta_ms_list else None
 
     detection_rate = detected_count / max(len(anom_videos), 1)
 
@@ -190,11 +193,11 @@ def measure_time_to_alert(
         "missed_videos": missed_count,
         "detection_rate": round(detection_rate, 4),
         "early_alerts_before_onset": early_alerts,
-        "mean_tta_ms": round(mean_tta_ms, 1),
-        "median_tta_ms": round(median_tta_ms, 1),
-        "p90_tta_ms": round(p90_tta_ms, 1),
-        "min_tta_ms": round(min_tta_ms, 1),
-        "max_tta_ms": round(max_tta_ms, 1),
+        "mean_tta_ms": mean_tta_ms,
+        "median_tta_ms": median_tta_ms,
+        "p90_tta_ms": p90_tta_ms,
+        "min_tta_ms": min_tta_ms,
+        "max_tta_ms": max_tta_ms,
         "mean_tta_frames": round(float(np.mean(tta_frames_list)), 1) if tta_frames_list else None,
         "median_tta_frames": round(float(np.median(tta_frames_list)), 1) if tta_frames_list else None,
         "video_results": video_details,
@@ -202,9 +205,12 @@ def measure_time_to_alert(
 
     print("\n--- Quantitative Time-to-Alert (TTA) Results ---")
     print(f"Incident Detection Rate: {detected_count}/{len(anom_videos)} ({detection_rate*100:.1f}%)")
-    print(f"Mean Time-to-Alert:      {mean_tta_ms:.1f} ms ({results['mean_tta_frames']} frames @ 30 FPS)")
-    print(f"Median Time-to-Alert:    {median_tta_ms:.1f} ms ({results['median_tta_frames']} frames)")
-    print(f"90th Percentile TTA:     {p90_tta_ms:.1f} ms")
+    mean_str = f"{mean_tta_ms:.1f} ms" if mean_tta_ms is not None else "N/A"
+    med_str = f"{median_tta_ms:.1f} ms" if median_tta_ms is not None else "N/A"
+    p90_str = f"{p90_tta_ms:.1f} ms" if p90_tta_ms is not None else "N/A"
+    print(f"Mean Time-to-Alert:      {mean_str} ({results['mean_tta_frames']} frames @ 30 FPS)")
+    print(f"Median Time-to-Alert:    {med_str} ({results['median_tta_frames']} frames)")
+    print(f"90th Percentile TTA:     {p90_str}")
     print(f"Sub-Second Alerts (<1s): {sum(1 for t in tta_ms_list if t <= 1000.0)} / {len(tta_ms_list)}")
     print("=" * 65)
 
@@ -237,6 +243,12 @@ def main():
         dest="output",
         default=PROJECT_ROOT / "outputs" / "profiling" / "time_to_alert_benchmark.json",
     )
+    parser.add_argument(
+        "--allow-unsafe-checkpoint",
+        action="store_true",
+        default=False,
+        help="Allow unsafe pickle checkpoint loading.",
+    )
     args = parser.parse_args()
 
     measure_time_to_alert(
@@ -247,6 +259,7 @@ def main():
         device=args.device,
         output_json=args.output,
         max_videos=args.max_videos,
+        allow_unsafe=args.allow_unsafe_checkpoint,
     )
 
 

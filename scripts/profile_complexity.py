@@ -59,30 +59,41 @@ def estimate_convnext_gflops(image_size: int = 128, frames: int = 16) -> float:
     return round(4.5 * ((image_size / 224) ** 2) * frames, 3)
 
 
-def estimate_yolo11n_gflops(frames: int = 16) -> float:
+def estimate_yolo11n_gflops(image_size: int = 128, frames: int = 16) -> float:
     """
     YOLO11n is ~6.5 GFLOPs on 640x640 per frame.
-    On 128x128 resolution:
-    6.5 * (128/640)^2 ~= 0.26 GFLOPs per frame.
-    For 16 frames: ~4.16 GFLOPs.
+    On image_size x image_size resolution:
+    6.5 * (image_size/640)^2 per frame.
     """
-    return round(6.5 * ((128 / 640) ** 2) * frames, 3)
+    return round(6.5 * ((image_size / 640) ** 2) * frames, 3)
 
 
 def benchmark_module_latency(
     fn,
     warmup: int = 5,
     repeat: int = 20,
-) -> tuple[float, float]:
-    """Measure mean latency in ms and standard deviation."""
+    device: torch.device | str | None = None,
+) -> float:
+    """Measure mean latency in ms."""
+    is_cuda = (
+        torch.device(device).type == "cuda"
+        if device is not None
+        else torch.cuda.is_available()
+    )
     for _ in range(warmup):
         with torch.no_grad():
             fn()
+    if is_cuda:
+        torch.cuda.synchronize()
     latencies = []
     for _ in range(repeat):
+        if is_cuda:
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         with torch.no_grad():
             fn()
+        if is_cuda:
+            torch.cuda.synchronize()
         latencies.append((time.perf_counter() - t0) * 1000.0)
     mean_lat = sum(latencies) / len(latencies)
     return round(mean_lat, 2)
@@ -92,18 +103,17 @@ def profile_complexity(
     checkpoint_path: Path | None = None,
     device: str = "cpu",
     output_path: Path | None = None,
+    allow_unsafe: bool = False,
 ) -> dict:
     device = torch.device(device)
     print("=" * 65)
     print("         ARGUS COMPUTATIONAL COMPLEXITY PROFILER (PHASE 4.1)        ")
     print("=" * 65)
-    print(f"Device:              {device.type.upper()}")
-    print(f"Standard Input Clip: 16 frames @ 128x128 RGB")
 
     cfg = ARGUSConfig()
     if checkpoint_path and checkpoint_path.exists():
         print(f"Loaded Checkpoint:   {checkpoint_path}")
-        state = load_checkpoint(checkpoint_path, map_location=device, allow_unsafe=True)
+        state = load_checkpoint(checkpoint_path, map_location=device, allow_unsafe=allow_unsafe)
         if "config" in state:
             cfg = ARGUSConfig.from_dict(state["config"], strict=True)
         model = ARGUS(cfg).to(device)
@@ -112,21 +122,28 @@ def profile_complexity(
         print("[INFO] Initializing standard Threat-5 ARGUS architecture...")
         model = ARGUS(cfg).to(device)
 
+    img_size = int(getattr(cfg, "image_size", 128))
+    print(f"Device:              {device.type.upper()}")
+    print(f"Standard Input Clip: 16 frames @ {img_size}x{img_size} RGB")
+
     model.eval()
 
-    dummy_clip = torch.randn(1, 16, 3, 128, 128, device=device)
+    dummy_clip = torch.randn(1, 16, 3, img_size, img_size, device=device)
     results = {
         "device": device.type,
-        "input_shape": [1, 16, 3, 128, 128],
+        "input_shape": [1, 16, 3, img_size, img_size],
         "components": {},
     }
 
     # 1. Spatial Feature Extractor (Backbone / Patch Projection)
     backbone = getattr(model, "backbone", None) or getattr(model, "patch_proj", None)
     backbone_total, backbone_trainable = count_parameters(backbone)
-    backbone_gflops = estimate_convnext_gflops(128, 16)
+    backbone_gflops = estimate_convnext_gflops(img_size, 16)
     if backbone is not None:
-        b_lat = benchmark_module_latency(lambda: backbone(dummy_clip.view(-1, 3, 128, 128)))
+        b_lat = benchmark_module_latency(
+            lambda: backbone(dummy_clip.view(-1, 3, img_size, img_size)),
+            device=device,
+        )
     else:
         b_lat = 4.5
     results["components"]["backbone_convnext"] = {
@@ -139,8 +156,9 @@ def profile_complexity(
     }
 
     # 2. YOLO11n Semantic Detector
-    det_total = 2616248  # Official YOLO11n params
-    det_gflops = estimate_yolo11n_gflops(16)
+    use_det = bool(getattr(cfg, "use_semantic_detector", True))
+    det_total = 2616248 if use_det else 0  # Official YOLO11n params
+    det_gflops = estimate_yolo11n_gflops(img_size, 16) if use_det else 0.0
     results["components"]["semantic_detector_yolo11n"] = {
         "description": "YOLO11n Real-time Object & Threat Localizer",
         "total_parameters": det_total,
@@ -150,6 +168,8 @@ def profile_complexity(
     }
 
     # 3. EdgeGAT
+    use_graph = bool(getattr(cfg, "use_graph", True))
+    edge_gat_gflops = 0.45 if (use_graph and getattr(model, "edge_gat", None) is not None) else 0.0
     if getattr(model, "edge_gat", None) is not None:
         eg_total, eg_trainable = count_parameters(model.edge_gat)
         in_dim = getattr(model.edge_gat, "in_dim", getattr(model.edge_gat.proj, "in_features", 6))
@@ -159,18 +179,23 @@ def profile_complexity(
         dummy_edges = (src, dst)
         edge_d = getattr(model.edge_gat.edge_proj, "in_features", 4)
         dummy_edge_attr = torch.randn(16, edge_d, device=device)
-        eg_lat = benchmark_module_latency(lambda: model.edge_gat(dummy_nodes, dummy_edges, dummy_edge_attr))
+        eg_lat = benchmark_module_latency(
+            lambda: model.edge_gat(dummy_nodes, dummy_edges, dummy_edge_attr),
+            device=device,
+        )
         results["components"]["edge_gat"] = {
             "description": "Relational Edge-Conditioned Graph Attention (4 Heads, 4D Spatiotemporal Edges)",
             "total_parameters": eg_total,
             "trainable_parameters": eg_trainable,
-            "gflops": 0.45,
+            "gflops": edge_gat_gflops,
             "latency_ms": eg_lat,
         }
 
     # 4. Token Pruner & Fusion
-    fusion_mod = getattr(model, "fusion", None) or getattr(model, "pruner", None)
-    pruner_total, pruner_trainable = count_parameters(fusion_mod)
+    fusion_total, fusion_trainable = count_parameters(getattr(model, "fusion", None))
+    pruner_only_total, pruner_only_trainable = count_parameters(getattr(model, "pruner", None))
+    pruner_total = fusion_total + pruner_only_total
+    pruner_trainable = fusion_trainable + pruner_only_trainable
     results["components"]["token_pruner_and_fusion"] = {
         "description": f"Dynamic Visual Token Pruning (Keep Ratio R={getattr(cfg, 'keep_ratio', 0.5)}) + Cross-Fusion",
         "total_parameters": pruner_total,
@@ -185,8 +210,8 @@ def profile_complexity(
     dummy_pruned = torch.randn(1, 16, t_dim, device=device)
     dummy_unpruned = torch.randn(1, 32, t_dim, device=device)
 
-    t_pruned_lat = benchmark_module_latency(lambda: temporal_mod(dummy_pruned)) if temporal_mod else 2.0
-    t_unpruned_lat = benchmark_module_latency(lambda: temporal_mod(dummy_unpruned)) if temporal_mod else 4.0
+    t_pruned_lat = benchmark_module_latency(lambda: temporal_mod(dummy_pruned), device=device) if temporal_mod else 2.0
+    t_unpruned_lat = benchmark_module_latency(lambda: temporal_mod(dummy_unpruned), device=device) if temporal_mod else 4.0
 
     results["components"]["temporal_transformer_r050"] = {
         "description": "Causal Transformer Encoder (4 Layers, 4 Heads) with Pruned Tokens (R=0.50)",
@@ -206,8 +231,8 @@ def profile_complexity(
 
     # 6. Full End-to-End Pipeline
     full_total, full_trainable = count_parameters(model)
-    full_lat = benchmark_module_latency(lambda: model(dummy_clip))
-    full_gflops = round(backbone_gflops + det_gflops + 0.45 + 0.18 + 0.85, 2)
+    full_lat = benchmark_module_latency(lambda: model(dummy_clip), device=device)
+    full_gflops = round(backbone_gflops + det_gflops + edge_gat_gflops + 0.18 + 0.85, 2)
 
     results["full_model"] = {
         "total_parameters": full_total,
@@ -241,9 +266,15 @@ def main():
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "outputs" / "profiling" / "complexity_profile.json")
+    parser.add_argument("--allow-unsafe-checkpoint", action="store_true", default=False, help="Allow unsafe pickle checkpoint loading.")
     args = parser.parse_args()
 
-    profile_complexity(checkpoint_path=args.checkpoint, device=args.device, output_path=args.output)
+    profile_complexity(
+        checkpoint_path=args.checkpoint,
+        device=args.device,
+        output_path=args.output,
+        allow_unsafe=args.allow_unsafe_checkpoint,
+    )
 
 
 if __name__ == "__main__":

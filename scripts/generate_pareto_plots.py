@@ -76,6 +76,55 @@ def generate_pareto_plots(output_png: Path, metrics_json: Path) -> None:
     print(f"[OK] Measured-data Pareto plot generated: {output_png}")
 
 
+def _extract_auc(data: dict, source: Path) -> float:
+    auc = data.get("auc_roc", data.get("roc_auc", data.get("auc")))
+    if auc is None:
+        raise ValueError(f"Missing 'auc_roc'/'roc_auc' in {source}")
+    return float(auc)
+
+
+def _extract_model_profile(model_dir: Path, eval_data: dict, eval_path: Path) -> dict[str, float]:
+    """Extract measured fps, gflops, params_m, and memory_mb for a baseline/ablation without defaults."""
+    comp_data: dict = {}
+    comp_path = model_dir / "complexity_profile.json"
+    if comp_path.is_file():
+        with open(comp_path, "r", encoding="utf-8") as f:
+            comp_data = json.load(f)
+
+    mem_data: dict = {}
+    mem_path = model_dir / "memory_profile.json"
+    if mem_path.is_file():
+        with open(mem_path, "r", encoding="utf-8") as f:
+            mem_data = json.load(f)
+
+    full_m = comp_data.get("full_model", {}) if isinstance(comp_data, dict) else {}
+    fps = eval_data.get("fps", eval_data.get("throughput_fps", full_m.get("throughput_fps")))
+    gflops = eval_data.get("gflops", eval_data.get("total_gflops_per_clip", full_m.get("total_gflops_per_clip")))
+    params_m = eval_data.get("params_m", full_m.get("params_m"))
+    if params_m is None and "total_parameters" in full_m:
+        params_m = float(full_m["total_parameters"]) / 1e6
+    memory_mb = eval_data.get("memory_mb", eval_data.get("peak_rss_mb", mem_data.get("peak_rss_mb")))
+
+    missing = [
+        name
+        for name, val in (("fps", fps), ("gflops", gflops), ("params_m", params_m), ("memory_mb", memory_mb))
+        if val is None
+    ]
+    if missing:
+        raise ValueError(
+            f"Missing measured profiling metrics {missing} for {eval_path.parent.name} "
+            f"(expected in {eval_path.name} or {model_dir}/complexity_profile.json & memory_profile.json)"
+        )
+
+    return {
+        "auc": _extract_auc(eval_data, eval_path),
+        "fps": float(fps),
+        "gflops": float(gflops),
+        "params_m": round(float(params_m), 2),
+        "memory_mb": float(memory_mb),
+    }
+
+
 def compile_pareto_metrics(compile_dir: Path, output_json: Path | None = None) -> Path:
     """Compile verified measured metrics across outputs/ into a unified Pareto JSON."""
     compile_dir = Path(compile_dir)
@@ -83,109 +132,94 @@ def compile_pareto_metrics(compile_dir: Path, output_json: Path | None = None) -
 
     # If target already exists and passes schema validation, return it directly
     if target_json.is_file():
-        try:
-            load_metrics(target_json)
-            return target_json
-        except Exception:
-            pass
+        load_metrics(target_json)
+        return target_json
 
     # 1. Ingest Complexity Profiling
     comp_path = compile_dir / "profiling" / "complexity_profile.json"
-    comp_data: dict = {}
-    if comp_path.is_file():
-        with open(comp_path, "r", encoding="utf-8") as f:
-            comp_data = json.load(f)
+    if not comp_path.is_file():
+        raise FileNotFoundError(f"Required complexity profile not found: {comp_path}")
+    with open(comp_path, "r", encoding="utf-8") as f:
+        comp_data = json.load(f)
 
     # 2. Ingest Memory Profiling
     mem_path = compile_dir / "profiling" / "memory_profile.json"
-    mem_data: dict = {}
-    if mem_path.is_file():
-        with open(mem_path, "r", encoding="utf-8") as f:
-            mem_data = json.load(f)
+    if not mem_path.is_file():
+        raise FileNotFoundError(f"Required memory profile not found: {mem_path}")
+    with open(mem_path, "r", encoding="utf-8") as f:
+        mem_data = json.load(f)
 
     # 3. Ingest Champion Evaluation
     champ_eval = compile_dir / "checkpoints_rlvd_full" / "eval_test_clean.json"
-    champ_auc = 0.9818
-    if champ_eval.is_file():
-        try:
-            with open(champ_eval, "r", encoding="utf-8") as f:
-                c_data = json.load(f)
-                champ_auc = float(c_data.get("auc_roc", c_data.get("roc_auc", 0.9818)))
-        except Exception:
-            pass
+    if not champ_eval.is_file():
+        raise FileNotFoundError(f"Required champion evaluation file not found: {champ_eval}")
+    with open(champ_eval, "r", encoding="utf-8") as f:
+        c_data = json.load(f)
+    champ_auc = _extract_auc(c_data, champ_eval)
 
-    full_m = comp_data.get("full_model", {})
-    champ_fps = float(full_m.get("throughput_fps", 35.6))
-    champ_gflops = float(full_m.get("total_gflops_per_clip", 29.15))
-    champ_params = 31.8
-    champ_mem = float(mem_data.get("peak_rss_mb", 239.5))
+    full_m = comp_data.get("full_model")
+    if not isinstance(full_m, dict):
+        raise ValueError(f"Missing 'full_model' section in {comp_path}")
+    if "throughput_fps" not in full_m or "total_gflops_per_clip" not in full_m:
+        raise ValueError(f"Missing 'throughput_fps' or 'total_gflops_per_clip' in {comp_path}")
+    if "params_m" in full_m:
+        champ_params = float(full_m["params_m"])
+    elif "total_parameters" in full_m:
+        champ_params = round(float(full_m["total_parameters"]) / 1e6, 2)
+    else:
+        raise ValueError(f"Missing 'total_parameters'/'params_m' in {comp_path}")
+
+    if "peak_rss_mb" not in mem_data or mem_data["peak_rss_mb"] is None:
+        raise ValueError(f"Missing 'peak_rss_mb' in {mem_path}")
 
     metrics: dict[str, dict[str, float]] = {
         "ARGUS Threat-5 (Champion)": {
             "auc": champ_auc,
-            "fps": champ_fps,
-            "gflops": champ_gflops,
+            "fps": float(full_m["throughput_fps"]),
+            "gflops": float(full_m["total_gflops_per_clip"]),
             "params_m": champ_params,
-            "memory_mb": champ_mem,
+            "memory_mb": float(mem_data["peak_rss_mb"]),
         }
     }
 
-    # 4. Ingest Baselines
+    # 4. Ingest Baselines (required)
     baseline_specs = {
-        "convnext_mil": ("ConvNeXt-Tiny + MIL", 0.6737, 145.0, 23.51, 28.6, 115.0),
-        "causal_tsm": ("Causal TSM", 0.6850, 121.0, 24.1, 28.7, 120.0),
-        "rtfm_lite": ("RTFM-Lite", 0.7429, 118.0, 25.2, 29.1, 124.0),
+        "convnext_mil": "ConvNeXt-Tiny + MIL",
+        "causal_tsm": "Causal TSM",
+        "rtfm_lite": "RTFM-Lite",
     }
 
-    for b_key, (disp_name, def_auc, b_fps, b_gflops, b_params, b_mem) in baseline_specs.items():
-        b_eval = compile_dir / "baselines" / b_key / "eval_test_clean.json"
-        b_auc = def_auc
-        if b_eval.is_file():
-            try:
-                with open(b_eval, "r", encoding="utf-8") as f:
-                    b_data = json.load(f)
-                    b_auc = float(b_data.get("auc_roc", b_data.get("roc_auc", def_auc)))
-            except Exception:
-                pass
-        metrics[disp_name] = {
-            "auc": b_auc,
-            "fps": b_fps,
-            "gflops": b_gflops,
-            "params_m": b_params,
-            "memory_mb": b_mem,
-        }
+    for b_key, disp_name in baseline_specs.items():
+        b_dir = compile_dir / "baselines" / b_key
+        b_eval = b_dir / "eval_test_clean.json"
+        if not b_eval.is_file():
+            raise FileNotFoundError(f"Required baseline evaluation file not found: {b_eval}")
+        with open(b_eval, "r", encoding="utf-8") as f:
+            b_data = json.load(f)
+        metrics[disp_name] = _extract_model_profile(b_dir, b_data, b_eval)
 
     # 5. Ingest Ablations (if present)
     ablation_specs = {
-        "ablation_1_no_graph": ("Ablation 1 (No Graph)", 0.8120, 82.0, 24.8, 29.8, 130.0),
-        "ablation_2_no_edge_attrs": ("Ablation 2 (No Edge Attr)", 0.9140, 23.5, 29.2, 31.6, 180.0),
-        "ablation_3_no_roi_features": ("Ablation 3 (No RoI Feat)", 0.8870, 26.0, 27.5, 30.5, 165.0),
-        "ablation_4_no_pruning": ("Ablation 4 (No Pruning)", 0.9825, 14.2, 32.8, 31.8, 240.0),
-        "ablation_5_uniform_sampling": ("Ablation 5 (Uniform Stride)", 0.9310, 22.5, 29.5, 31.8, 182.4),
-        "ablation_6_no_causal_memory": ("Ablation 6 (No Memory)", 0.9250, 24.0, 28.8, 31.8, 178.0),
+        "ablation_1_no_graph": "Ablation 1 (No Graph)",
+        "ablation_2_no_edge_attrs": "Ablation 2 (No Edge Attr)",
+        "ablation_3_no_roi_features": "Ablation 3 (No RoI Feat)",
+        "ablation_4_no_pruning": "Ablation 4 (No Pruning)",
+        "ablation_5_uniform_sampling": "Ablation 5 (Uniform Stride)",
+        "ablation_6_no_causal_memory": "Ablation 6 (No Memory)",
     }
 
-    for a_key, (disp_name, def_auc, a_fps, a_gflops, a_params, a_mem) in ablation_specs.items():
-        a_eval = compile_dir / "ablations" / a_key / "eval_test_clean.json"
+    for a_key, disp_name in ablation_specs.items():
+        a_dir = compile_dir / "ablations" / a_key
+        a_eval = a_dir / "eval_test_clean.json"
         if a_eval.is_file():
-            a_auc = def_auc
-            try:
-                with open(a_eval, "r", encoding="utf-8") as f:
-                    a_data = json.load(f)
-                    a_auc = float(a_data.get("auc_roc", a_data.get("roc_auc", def_auc)))
-            except Exception:
-                pass
-            metrics[disp_name] = {
-                "auc": a_auc,
-                "fps": a_fps,
-                "gflops": a_gflops,
-                "params_m": a_params,
-                "memory_mb": a_mem,
-            }
+            with open(a_eval, "r", encoding="utf-8") as f:
+                a_data = json.load(f)
+            metrics[disp_name] = _extract_model_profile(a_dir, a_data, a_eval)
 
     target_json.parent.mkdir(parents=True, exist_ok=True)
     with open(target_json, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
+    load_metrics(target_json)
     print(f"[OK] Compiled {len(metrics)} model records to {target_json}")
     return target_json
 

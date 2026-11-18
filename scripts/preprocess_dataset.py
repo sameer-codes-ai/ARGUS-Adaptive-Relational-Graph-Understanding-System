@@ -59,11 +59,14 @@ def process_single_video(task: tuple[str, str, int, int]) -> tuple[bool, str, st
         reservoir_rng = None
 
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
+            if target_indices is not None and frame_idx not in target_indices:
+                if not cap.grab():
+                    break
+            else:
+                ok, frame = cap.read()
+                if not ok:
+                    break
 
-            if target_indices is None or frame_idx in target_indices:
                 h, w = frame.shape[:2]
                 if h != image_size or w != image_size:
                     interp = cv2.INTER_AREA if (h > image_size and w > image_size) else cv2.INTER_LINEAR
@@ -105,9 +108,11 @@ def process_single_video(task: tuple[str, str, int, int]) -> tuple[bool, str, st
         # Stack into (T, 3, H, W) uint8 tensor
         clip_tensor = torch.stack(frames[:num_frames], dim=0)
 
-        # Ensure directory exists and save
+        # Ensure directory exists and save atomically
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(clip_tensor, out_path)
+        tmp_path = out_path.with_suffix(".pt.tmp")
+        torch.save(clip_tensor, tmp_path)
+        os.replace(tmp_path, out_path)
         return True, video_path.name, ""
 
     except Exception as exc:

@@ -80,7 +80,10 @@ def run_multi_seed(
     summary_path = output_base / "multi_seed_summary.json"
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{TEST_DEPS};{PROJECT_ROOT}"
+    pp_parts = [str(TEST_DEPS), str(PROJECT_ROOT)]
+    if env.get("PYTHONPATH"):
+        pp_parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(pp_parts)
 
     print("=" * 65)
     print("      ARGUS MULTI-SEED STATISTICAL RIGOR SUITE (PHASE 5)        ")

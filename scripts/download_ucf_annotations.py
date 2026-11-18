@@ -57,7 +57,7 @@ def parse_temporal_annotation_line(line: str) -> dict | None:
     Example: Normal_Videos_003_x264.mp4 Normal -1 -1 -1 -1
     """
     parts = line.strip().split()
-    if not parts:
+    if len(parts) < 2:
         return None
 
     video_filename = parts[0]

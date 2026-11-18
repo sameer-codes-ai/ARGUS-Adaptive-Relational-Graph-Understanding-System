@@ -36,10 +36,12 @@ from argus.checkpoint import load_checkpoint, model_state_dict
 
 def get_process_memory_mb() -> float:
     """Return process RSS memory in MB."""
-    if psutil is not None:
-        process = psutil.Process(os.getpid())
-        return round(process.memory_info().rss / (1024.0 * 1024.0), 2)
-    return 0.0
+    if psutil is None:
+        raise RuntimeError(
+            "psutil is required for memory profiling. Install it with `pip install psutil`."
+        )
+    process = psutil.Process(os.getpid())
+    return round(process.memory_info().rss / (1024.0 * 1024.0), 2)
 
 
 def profile_memory_stream(
@@ -49,6 +51,7 @@ def profile_memory_stream(
     device: str = "cpu",
     output_json: Path | None = None,
     output_plot: Path | None = None,
+    allow_unsafe: bool = False,
 ) -> dict:
     device = torch.device(device)
     print("=" * 65)
@@ -60,7 +63,7 @@ def profile_memory_stream(
 
     cfg = ARGUSConfig()
     if checkpoint_path and checkpoint_path.exists():
-        state = load_checkpoint(checkpoint_path, map_location=device, allow_unsafe=True)
+        state = load_checkpoint(checkpoint_path, map_location=device, allow_unsafe=allow_unsafe)
         if "config" in state:
             cfg = ARGUSConfig.from_dict(state["config"], strict=True)
         model = ARGUS(cfg).to(device)
@@ -206,6 +209,7 @@ def main():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-json", "--output", "-o", type=Path, dest="output_json", default=PROJECT_ROOT / "outputs" / "profiling" / "memory_profile.json")
     parser.add_argument("--output-plot", type=Path, default=PROJECT_ROOT / "figures" / "memory_drift_profile.png")
+    parser.add_argument("--allow-unsafe-checkpoint", action="store_true", default=False, help="Allow unsafe pickle checkpoint loading.")
     args = parser.parse_args()
 
     profile_memory_stream(
@@ -215,6 +219,7 @@ def main():
         device=args.device,
         output_json=args.output_json,
         output_plot=args.output_plot,
+        allow_unsafe=args.allow_unsafe_checkpoint,
     )
 
 

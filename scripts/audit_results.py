@@ -179,11 +179,17 @@ def audit_profiling(ctx: AuditContext, prof_dir: Path) -> None:
     if mem_file.is_file():
         with open(mem_file, "r", encoding="utf-8") as f:
             m_data = json.load(f)
-        rss_drift = m_data.get("drift_mb_per_hour", 0.0)
+        rss_drift = m_data.get("net_drift_mb")
+        if rss_drift is None:
+            rss_drift = m_data.get("drift_mb_per_hour")
+        bounded_flag = m_data.get("is_bounded_O1")
+        if bounded_flag is None:
+            bounded_flag = m_data.get("bounded_memory_verified", False)
+        has_valid_drift = rss_drift is not None
         ctx.check(
             "Memory profiler verifies O(1) bounded memory",
-            m_data.get("bounded_memory_verified", False) or abs(float(rss_drift)) < 5.0,
-            f"Memory drift reported: {rss_drift} MB/hr",
+            has_valid_drift and (bool(bounded_flag) or abs(float(rss_drift)) < 5.0),
+            f"Memory drift missing or unbounded: {rss_drift} MB",
             warn_only=True,
         )
 
