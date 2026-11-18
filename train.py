@@ -87,7 +87,7 @@ def safe_torch_save(obj, target_path: Path, max_retries: int = 5, retry_delay: f
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train ARGUS Anomaly & Aggression Detection Model.")
-    parser.add_argument('--model-type', type=str, choices=['argus', 'convnext_mil', 'causal_tsm', 'rtfm_lite'], default='argus', help='Model architecture to train.')
+    parser.add_argument('--model-type', type=str, choices=['argus', 'convnext_mil', 'causal_tsm', 'rtfm_lite'], default=None, help='Model architecture to train.')
     parser.add_argument('--config', type=Path, default=Path('configs/train.yaml'), help='Path to YAML config file.')
     parser.add_argument('--manifest', type=str, help='Path to training manifest CSV.')
     parser.add_argument('--val-manifest', type=str, help='Path to validation manifest CSV.')
@@ -248,7 +248,11 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
             optimizer.step()
 
         total_loss += loss.item()
-        preds = out.scores.masked_fill(~out.valid_mask, float('-inf')).max(dim=1).values.detach()
+        masked_scores = out.scores.masked_fill(~out.valid_mask, float('-inf'))
+        preds = masked_scores.max(dim=1).values.detach()
+        if not out.valid_mask.all():
+            has_valid = out.valid_mask.any(dim=1)
+            preds = torch.where(has_valid, preds, torch.zeros_like(preds))
         all_preds.append(preds)
         all_labels.append(y.detach())
 
@@ -275,6 +279,8 @@ def train_one_epoch(model, dataloader, optimizer, device, smoothness_w, sparsity
     pbar.close()
     elapsed = time.perf_counter() - epoch_start
     avg_loss = total_loss / max(batch_count, 1)
+    if not all_preds:
+        raise ValueError("Training dataloader produced no batches")
     metrics = binary_metrics(torch.cat(all_preds), torch.cat(all_labels))
     metrics['epoch_time_s'] = elapsed
     return avg_loss, metrics
@@ -309,7 +315,11 @@ def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, e
         )
 
         total_loss += loss.item()
-        preds = out.scores.masked_fill(~out.valid_mask, float('-inf')).max(dim=1).values.detach()
+        masked_scores = out.scores.masked_fill(~out.valid_mask, float('-inf'))
+        preds = masked_scores.max(dim=1).values.detach()
+        if not out.valid_mask.all():
+            has_valid = out.valid_mask.any(dim=1)
+            preds = torch.where(has_valid, preds, torch.zeros_like(preds))
         all_preds.append(preds)
         all_labels.append(y.detach())
 
@@ -327,6 +337,8 @@ def evaluate_epoch(model, dataloader, device, smoothness_w, sparsity_w, mil_w, e
     pbar.close()
     elapsed = time.perf_counter() - eval_start
     avg_loss = total_loss / max(batch_count, 1)
+    if not all_preds:
+        raise ValueError("Validation dataloader produced no batches")
     metrics = binary_metrics(torch.cat(all_preds), torch.cat(all_labels))
     metrics['val_time_s'] = elapsed
     return avg_loss, metrics
@@ -498,16 +510,18 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg['epochs'], eta_min=1e-6)
 
     use_amp = (device == 'cuda')
-    scaler = torch.cuda.amp.GradScaler(enabled=True) if use_amp else None
+    scaler = torch.amp.GradScaler('cuda', enabled=True) if use_amp else None
 
     if cfg['resume'] and not cfg['reset_optimizer']:
+        optimizer_restored = False
         if isinstance(checkpoint_data, dict) and 'optimizer' in checkpoint_data:
             try:
                 optimizer.load_state_dict(checkpoint_data['optimizer'])
+                optimizer_restored = True
                 print("  [OK] Restored optimizer state from checkpoint.")
             except Exception as e:
                 print(f"  [!] Note: Reinitialized optimizer ({e}).")
-        if isinstance(checkpoint_data, dict) and 'scheduler' in checkpoint_data:
+        if optimizer_restored and isinstance(checkpoint_data, dict) and 'scheduler' in checkpoint_data:
             try:
                 scheduler.load_state_dict(checkpoint_data['scheduler'])
                 scheduler.T_max = scheduler.last_epoch + cfg['epochs']
@@ -596,12 +610,24 @@ def main():
         status_line += f"  [{format_duration(epoch_duration)} / ETA: {format_duration(estimated_remaining_time)}]"
         print(status_line)
 
-        # Phase 1.2: Standardize Checkpoint Selection strictly on Validation ROC-AUC
-        if val_metrics and "auc_roc" in val_metrics and not np.isnan(val_metrics["auc_roc"]):
-            current_score = float(val_metrics["auc_roc"])
+        # Phase 1.2: Standardize Checkpoint Selection strictly on Validation ROC-AUC (with validation F1 / -val_loss fallback)
+        if val_metrics is not None:
+            val_auc = val_metrics.get("auc_roc", float('nan'))
+            if not np.isnan(val_auc):
+                current_score = float(val_auc)
+            elif "f1" in val_metrics and not np.isnan(val_metrics["f1"]):
+                current_score = float(val_metrics["f1"])
+            else:
+                current_score = float(-val_loss)
             current_loss = float(val_loss)
         else:
-            current_score = float(train_metrics["auc_roc"]) if "auc_roc" in train_metrics else 0.0
+            train_auc = train_metrics.get("auc_roc", float('nan'))
+            if not np.isnan(train_auc):
+                current_score = float(train_auc)
+            elif "f1" in train_metrics and not np.isnan(train_metrics["f1"]):
+                current_score = float(train_metrics["f1"])
+            else:
+                current_score = float(-train_loss)
             current_loss = float(train_loss)
 
         # Strict improvement (> 1e-4) with validation loss as deterministic secondary tie-breaker

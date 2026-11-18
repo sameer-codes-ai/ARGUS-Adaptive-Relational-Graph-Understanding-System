@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from argus import ARGUS, AlertDispatcher, generate_dashboard_html
+from argus.baselines import build_model
 from argus.config import ARGUSConfig
 from argus.data import load_clip_from_path
 from argus.checkpoint import load_checkpoint, model_state_dict, validate_component_metadata
@@ -66,11 +67,15 @@ def main():
     t0 = time.perf_counter()
     if args.checkpoint.exists():
         state = load_checkpoint(args.checkpoint, map_location=device, allow_unsafe=args.allow_unsafe_checkpoint)
-        saved_cfg = state.get('config', {})
-        config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
+        saved_cfg = dict(state.get('config', {}) or {}) if isinstance(state, dict) else {}
         if args.image_size is not None:
-            config.image_size = args.image_size
-        model = ARGUS(config=config).to(device)
+            saved_cfg['image_size'] = args.image_size
+        config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
+        model_type = (
+            state.get('model_type') or state.get('components', {}).get('model_type', 'argus')
+            if isinstance(state, dict) else 'argus'
+        )
+        model = build_model(model_type=model_type, config=config).to(device)
         validate_component_metadata(state, model)
         model.load_state_dict(model_state_dict(state))
         load_time = time.perf_counter() - t0
@@ -96,10 +101,14 @@ def main():
     print(f"[OK] [2/3] Decoded {args.frames} frames ({config.image_size}x{config.image_size}) in {format_duration(decode_time)}")
 
     # Step 3: Neural reasoning & graph inference
+    if device == 'cuda':
+        torch.cuda.synchronize()
     t2 = time.perf_counter()
     print(f"[*] [3/3] Running ARGUS adaptive sampling + scene graph reasoning...")
     with torch.no_grad():
         out = model(clip_batch, stream=args.stream, stream_id=args.stream_id)
+    if device == 'cuda':
+        torch.cuda.synchronize()
     infer_time = time.perf_counter() - t2
     print(f"[OK] [3/3] Neural inference finished in {format_duration(infer_time)}")
 
@@ -107,6 +116,8 @@ def main():
 
     valid_length = int(out.sequence_lengths[0].item())
     scores_seq = out.scores[0, :valid_length].cpu().numpy().tolist()
+    if not scores_seq:
+        raise ValueError("Model returned an empty score sequence")
     max_score = float(np.max(scores_seq))
     mean_score = float(np.mean(scores_seq))
     is_anomaly = bool(max_score >= args.threshold)

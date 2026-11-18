@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import io
 import json
 import mimetypes
@@ -26,6 +27,7 @@ import sys
 import threading
 import time
 import uuid
+import webbrowser
 from typing import Dict, List, Optional, Tuple
 import urllib.parse
 from http import HTTPStatus
@@ -57,6 +59,11 @@ MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_ANALYSIS_FRAMES = 256
 UPLOAD_RETENTION_SECONDS = 60 * 60
 ALLOWED_UPLOAD_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
+PROJECT_ROOT = Path(__file__).resolve().parent
+SAFE_OUTPUTS_EXTENSIONS = {
+    '.html', '.htm', '.css', '.js', '.png', '.jpg', '.jpeg', '.svg',
+    '.mp4', '.webm', '.avi', '.mov', '.csv',
+}
 
 # In-memory cache for presets to achieve sub-millisecond instant switching
 PRESET_CACHE: Dict[str, dict] = {}
@@ -152,32 +159,38 @@ def load_model(checkpoint_path: Path, *, allow_random_model: bool = False, allow
 
 
 def parse_multipart_data(body: bytes, boundary: bytes) -> Dict:
-    """Robust zero-dependency multipart/form-data parser for binary video files."""
-    parts = body.split(b'--' + boundary)
-    form_data = {}
-    for part in parts:
-        if not part or part.strip() in (b'--', b''):
-            continue
-        if b'\r\n\r\n' not in part:
-            continue
-        head_raw, payload = part.split(b'\r\n\r\n', 1)
-        if payload.endswith(b'\r\n'):
-            payload = payload[:-2]
-
-        headers_text = head_raw.decode('latin-1', errors='replace')
-        name_match = re.search(r'name="([^"]+)"', headers_text)
-        if not name_match:
-            continue
-        field_name = name_match.group(1)
-
-        filename_match = re.search(r'filename="([^"]+)"', headers_text)
-        if filename_match:
-            form_data[field_name] = {
-                'filename': filename_match.group(1),
-                'content': payload
-            }
-        else:
-            form_data[field_name] = payload.decode('utf-8', errors='replace')
+    """Zero-copy-scan multipart/form-data parser for binary video files."""
+    delim = b'--' + boundary
+    delim_len = len(delim)
+    form_data: Dict = {}
+    pos = body.find(delim)
+    while pos != -1:
+        part_start = pos + delim_len
+        if body[part_start:part_start + 2] == b'--':
+            break
+        if body[part_start:part_start + 2] == b'\r\n':
+            part_start += 2
+        next_pos = body.find(delim, part_start)
+        part_end = next_pos if next_pos != -1 else len(body)
+        header_end = body.find(b'\r\n\r\n', part_start, part_end)
+        if header_end != -1:
+            headers_text = body[part_start:header_end].decode('latin-1', errors='replace')
+            payload_start = header_end + 4
+            payload_end = part_end
+            if payload_end >= payload_start + 2 and body[payload_end - 2:payload_end] == b'\r\n':
+                payload_end -= 2
+            name_match = re.search(r'name="([^"]+)"', headers_text)
+            if name_match:
+                field_name = name_match.group(1)
+                filename_match = re.search(r'filename="([^"]+)"', headers_text)
+                if filename_match:
+                    form_data[field_name] = {
+                        'filename': filename_match.group(1),
+                        'content': body[payload_start:payload_end],
+                    }
+                else:
+                    form_data[field_name] = body[payload_start:payload_end].decode('utf-8', errors='replace')
+        pos = next_pos
     return form_data
 
 
@@ -335,8 +348,10 @@ def annotate_frame(
 
     # Threat Banner on Top-Right
     score_pct = f"ANOMALY: {score * 100:.1f}%"
-    cv2.putText(annotated, score_pct, (w - 220, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (240, 245, 255), 1, cv2.LINE_AA)
-    cv2.putText(annotated, status_text, (w - 220, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.32, theme_bgr, 1, cv2.LINE_AA)
+    (pct_w, _), _ = cv2.getTextSize(score_pct, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+    (st_w, _), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
+    cv2.putText(annotated, score_pct, (max(14, w - 14 - pct_w), 18), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (240, 245, 255), 1, cv2.LINE_AA)
+    cv2.putText(annotated, status_text, (max(14, w - 14 - st_w), 34), cv2.FONT_HERSHEY_SIMPLEX, 0.32, theme_bgr, 1, cv2.LINE_AA)
 
     # Bottom Progress Anomaly Line
     bar_w = int(w * min(score, 1.0))
@@ -398,6 +413,7 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
 
                 handler.send_response(HTTPStatus.PARTIAL_CONTENT)
                 handler.send_header('Content-Type', content_type)
+                handler.send_header('X-Content-Type-Options', 'nosniff')
                 handler.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
                 handler.send_header('Content-Length', str(length))
                 handler.send_header('Accept-Ranges', 'bytes')
@@ -425,6 +441,7 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
         # Full content fallback (200 OK)
         handler.send_response(HTTPStatus.OK)
         handler.send_header('Content-Type', content_type)
+        handler.send_header('X-Content-Type-Options', 'nosniff')
         handler.send_header('Content-Length', str(file_size))
         handler.send_header('Accept-Ranges', 'bytes')
         handler.end_headers()
@@ -439,6 +456,57 @@ def serve_file_ranged(handler: BaseHTTPRequestHandler, file_path: Path):
         pass
     except Exception:
         pass
+
+
+def _decode_video_single_pass(
+    source_path: Path,
+    target_frames: int,
+    image_size: int,
+    disp_size: Tuple[int, int] = (640, 360),
+) -> Optional[Tuple[torch.Tensor, List[np.ndarray], int, float, List[int]]]:
+    """Decode model-resolution clip and display-resolution BGR frames in one VideoCapture pass."""
+    cap = cv2.VideoCapture(str(source_path))
+    if not cap.isOpened():
+        cap.release()
+        return None
+    try:
+        total_native_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps_val = cap.get(cv2.CAP_PROP_FPS)
+        native_fps = float(fps_val) if (fps_val and fps_val > 0 and not np.isnan(fps_val)) else 25.0
+        if total_native_frames <= 0:
+            return None
+
+        orig_indices = torch.linspace(0, total_native_frames - 1, target_frames).long().tolist()
+        needed = set(orig_indices)
+        max_needed = orig_indices[-1]
+
+        tensor_map: Dict[int, torch.Tensor] = {}
+        disp_map: Dict[int, np.ndarray] = {}
+        frame_idx = 0
+        while frame_idx <= max_needed:
+            if not cap.grab():
+                break
+            if frame_idx in needed:
+                ok_ret, frame = cap.retrieve()
+                if ok_ret and frame is not None:
+                    disp_map[frame_idx] = cv2.resize(frame, disp_size, interpolation=cv2.INTER_AREA)
+                    if frame.shape[0] != image_size or frame.shape[1] != image_size:
+                        interp = cv2.INTER_AREA if frame.shape[0] > image_size else cv2.INTER_LINEAR
+                        m_frame = cv2.resize(frame, (image_size, image_size), interpolation=interp)
+                    else:
+                        m_frame = frame
+                    rgb = cv2.cvtColor(m_frame, cv2.COLOR_BGR2RGB)
+                    tensor_map[frame_idx] = torch.from_numpy(rgb).permute(2, 0, 1)
+            frame_idx += 1
+
+        if len(tensor_map) != len(needed):
+            return None
+
+        clip = torch.stack([tensor_map[i] for i in orig_indices]).float() / 255.0
+        disp_frames = [disp_map[i] for i in orig_indices]
+        return clip, disp_frames, total_native_frames, native_fps, orig_indices
+    finally:
+        cap.release()
 
 
 def process_video_inference(
@@ -458,49 +526,55 @@ def process_video_inference(
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("threshold must be in [0, 1]")
 
-    # Determine video file properties & native FPS
-    total_native_frames = 0
-    native_fps = 25.0
-    cap_inspect = None
-    if source_path.is_file():
-        try:
-            cap_inspect = cv2.VideoCapture(str(source_path))
-            if cap_inspect.isOpened():
-                total_native_frames = int(cap_inspect.get(cv2.CAP_PROP_FRAME_COUNT))
-                fps_val = cap_inspect.get(cv2.CAP_PROP_FPS)
-                if fps_val and fps_val > 0 and not np.isnan(fps_val):
-                    native_fps = float(fps_val)
-        except Exception:
-            pass
-        finally:
-            if cap_inspect:
-                cap_inspect.release()
-
-    # Load video or frame directory
+    # Load video or frame directory in a single pass when possible
     t_dec0 = time.perf_counter()
     raw_frame_files = find_frame_files(source_path) if source_path.is_dir() else []
     target_size = GLOBAL_CONFIG.image_size if GLOBAL_CONFIG else 128
+    disp_w, disp_h = 640, 360
 
-    clip = load_clip_from_path(source_path, target_frames=frames, image_size=target_size)
+    total_native_frames = 0
+    native_fps = 25.0
+    disp_frames: Optional[List[np.ndarray]] = None
+    orig_frame_indices: Optional[List[int]] = None
+
+    decoded = None
+    if source_path.is_file() and source_path.suffix.lower() != '.pt':
+        decoded = _decode_video_single_pass(
+            source_path, target_frames=frames, image_size=target_size, disp_size=(disp_w, disp_h)
+        )
+
+    if decoded is not None:
+        clip, disp_frames, total_native_frames, native_fps, orig_frame_indices = decoded
+        duration_sec = total_native_frames / max(native_fps, 1.0)
+    else:
+        clip = load_clip_from_path(source_path, target_frames=frames, image_size=target_size)
+        if raw_frame_files:
+            orig_frame_indices = torch.linspace(0, len(raw_frame_files) - 1, frames).long().tolist()
+            duration_sec = len(raw_frame_files) / max(native_fps, 1.0)
+        else:
+            orig_frame_indices = list(range(frames))
+            duration_sec = frames / max(native_fps, 1.0)
+
     clip_batch = clip.unsqueeze(0).to(DEVICE)
     decode_time_ms = (time.perf_counter() - t_dec0) * 1000.0
 
-    # Determine true video frame index mapping for each sampled tensor frame
-    if total_native_frames > 0:
-        orig_frame_indices = torch.linspace(0, total_native_frames - 1, frames).long().tolist()
-        duration_sec = total_native_frames / max(native_fps, 1.0)
-    elif raw_frame_files:
-        orig_frame_indices = torch.linspace(0, len(raw_frame_files) - 1, frames).long().tolist()
-        duration_sec = len(raw_frame_files) / max(native_fps, 1.0)
-    else:
-        orig_frame_indices = list(range(frames))
-        duration_sec = frames / max(native_fps, 1.0)
-
-    # Web accessible URL for native HTML5 video player
+    # Web accessible URL for native HTML5 video player (only if inside served static roots)
     video_url = None
-    if source_path.is_file() and source_path.suffix.lower() in ('.mp4', '.avi', '.mov', '.webm'):
-        clean_posix = source_path.as_posix().lstrip('./').lstrip('/')
-        video_url = '/' + clean_posix
+    if source_path.is_file() and source_path.suffix.lower() in ('.mp4', '.avi', '.mov', '.mkv', '.webm'):
+        resolved_src = source_path.resolve()
+        for static_root_name in ('demo_samples', 'outputs'):
+            static_root = (PROJECT_ROOT / static_root_name).resolve()
+            try:
+                rel = resolved_src.relative_to(static_root)
+                if static_root_name == 'outputs' and (
+                    (rel.parts and rel.parts[0] == 'web_uploads')
+                    or resolved_src.suffix.lower() not in SAFE_OUTPUTS_EXTENSIONS
+                ):
+                    break
+                video_url = f"/{static_root_name}/{rel.as_posix()}"
+                break
+            except ValueError:
+                continue
 
     # Neural inference
     t_inf0 = time.perf_counter()
@@ -520,88 +594,69 @@ def process_video_inference(
     # High-definition display frames (640x360)
     annotated_frames = []
     timeline = []
-    disp_w, disp_h = 640, 360
 
-    # Open video capture once for high-res extraction
-    video_cap = None
-    if source_path.is_file():
-        try:
-            video_cap = cv2.VideoCapture(str(source_path))
-        except Exception:
-            pass
+    for idx, clip_pos in enumerate(sampled_indices):
+        actual_video_frame = orig_frame_indices[clip_pos] if clip_pos < len(orig_frame_indices) else clip_pos
+        timestamp_sec = actual_video_frame / max(native_fps, 1.0)
+        sc = scores[idx]
 
-    try:
-        for idx, clip_pos in enumerate(sampled_indices):
-            actual_video_frame = orig_frame_indices[clip_pos] if clip_pos < len(orig_frame_indices) else clip_pos
-            timestamp_sec = actual_video_frame / max(native_fps, 1.0)
-            sc = scores[idx]
+        frame_bgr = None
+        if disp_frames is not None and clip_pos < len(disp_frames):
+            frame_bgr = disp_frames[clip_pos]
+        elif raw_frame_files and actual_video_frame < len(raw_frame_files):
+            try:
+                frame_bgr = cv2.imread(str(raw_frame_files[actual_video_frame]))
+            except Exception:
+                pass
 
-            frame_bgr = None
-            if raw_frame_files and actual_video_frame < len(raw_frame_files):
-                try:
-                    frame_bgr = cv2.imread(str(raw_frame_files[actual_video_frame]))
-                except Exception:
-                    pass
+        if frame_bgr is None:
+            t_frame = clip[clip_pos].permute(1, 2, 0).cpu().numpy()
+            frame_bgr = (t_frame * 255.0).astype(np.uint8)
+            frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_RGB2BGR)
 
-            if frame_bgr is None and video_cap is not None and video_cap.isOpened():
-                try:
-                    video_cap.set(cv2.CAP_PROP_POS_FRAMES, actual_video_frame)
-                    ok, read_f = video_cap.read()
-                    if ok and read_f is not None:
-                        frame_bgr = read_f
-                except Exception:
-                    pass
-
-            if frame_bgr is None:
-                t_frame = clip[clip_pos].permute(1, 2, 0).cpu().numpy()
-                frame_bgr = (t_frame * 255.0).astype(np.uint8)
-                frame_bgr = cv2.cvtColor(frame_bgr, cv2.COLOR_RGB2BGR)
-
+        if frame_bgr.shape[1] != disp_w or frame_bgr.shape[0] != disp_h:
             frame_bgr = cv2.resize(frame_bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
-            boxes = out.boxes[0][idx] if (out.boxes and idx < len(out.boxes[0])) else None
-            sem_types = out.semantic_types[0][idx] if (getattr(out, 'semantic_types', None) and idx < len(out.semantic_types[0])) else None
-            det_scores = out.detection_scores[0][idx] if (getattr(out, 'detection_scores', None) and idx < len(out.detection_scores[0])) else None
-            det_impl = getattr(out, 'detector_impl', 'yolo')
+        boxes = out.boxes[0][idx] if (out.boxes and idx < len(out.boxes[0])) else None
+        sem_types = out.semantic_types[0][idx] if (getattr(out, 'semantic_types', None) and idx < len(out.semantic_types[0])) else None
+        det_scores = out.detection_scores[0][idx] if (getattr(out, 'detection_scores', None) and idx < len(out.detection_scores[0])) else None
+        det_impl = getattr(out, 'detector_impl', 'yolo')
 
-            annotated = annotate_frame(
-                frame_bgr=frame_bgr,
-                boxes=boxes,
-                score=sc,
-                threshold=threshold,
-                frame_idx=idx,
-                total_frames=len(sampled_indices),
-                orig_idx=actual_video_frame,
-                semantic_types=sem_types,
-                scores=det_scores,
-                detector_impl=det_impl,
-            )
+        annotated = annotate_frame(
+            frame_bgr=frame_bgr,
+            boxes=boxes,
+            score=sc,
+            threshold=threshold,
+            frame_idx=idx,
+            total_frames=len(sampled_indices),
+            orig_idx=actual_video_frame,
+            semantic_types=sem_types,
+            scores=det_scores,
+            detector_impl=det_impl,
+        )
 
-            _, buf = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            b64_str = base64.b64encode(buf.tobytes()).decode('utf-8')
+        _, buf = cv2.imencode('.jpg', annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        b64_str = base64.b64encode(buf.tobytes()).decode('utf-8')
 
-            mins, secs = divmod(int(timestamp_sec), 60)
-            millis = int((timestamp_sec - int(timestamp_sec)) * 10)
-            time_tag = f"{mins:02d}:{secs:02d}.{millis}"
+        mins, secs = divmod(int(timestamp_sec), 60)
+        millis = int((timestamp_sec - int(timestamp_sec)) * 10)
+        time_tag = f"{mins:02d}:{secs:02d}.{millis}"
 
-            annotated_frames.append({
-                "index": idx,
-                "orig_idx": actual_video_frame,
-                "time_sec": round(timestamp_sec, 2),
-                "time_str": time_tag,
-                "score": round(sc, 4),
-                "is_anomaly": bool(sc >= threshold),
-                "data_url": f"data:image/jpeg;base64,{b64_str}"
-            })
+        annotated_frames.append({
+            "index": idx,
+            "orig_idx": actual_video_frame,
+            "time_sec": round(timestamp_sec, 2),
+            "time_str": time_tag,
+            "score": round(sc, 4),
+            "is_anomaly": bool(sc >= threshold),
+            "data_url": f"data:image/jpeg;base64,{b64_str}"
+        })
 
-            timeline.append({
-                "time": round(timestamp_sec, 2),
-                "frame": int(actual_video_frame),
-                "score": round(float(sc), 4),
-                "is_anomaly": bool(sc >= threshold)
-            })
-    finally:
-        if video_cap is not None:
-            video_cap.release()
+        timeline.append({
+            "time": round(timestamp_sec, 2),
+            "frame": int(actual_video_frame),
+            "score": round(float(sc), 4),
+            "is_anomaly": bool(sc >= threshold)
+        })
 
     total_time_ms = (time.perf_counter() - t_start) * 1000.0
     fps = float(len(sampled_indices) / max(infer_time_ms / 1000.0, 1e-4))
@@ -694,13 +749,19 @@ def resolve_static_path(request_path: str) -> Optional[Path]:
     segments = [segment for segment in decoded.split('/') if segment]
     if len(segments) < 2 or segments[0] not in {'demo_samples', 'outputs', 'docs'}:
         return None
-    root = (Path.cwd() / segments[0]).resolve()
+    if segments[0] == 'outputs' and segments[1] == 'web_uploads':
+        return None
+    root = (PROJECT_ROOT / segments[0]).resolve()
     candidate = (root / Path(*segments[1:])).resolve()
     try:
         candidate.relative_to(root)
     except ValueError:
         return None
-    return candidate if candidate.is_file() else None
+    if not candidate.is_file():
+        return None
+    if segments[0] == 'outputs' and candidate.suffix.lower() not in SAFE_OUTPUTS_EXTENSIONS:
+        return None
+    return candidate
 
 
 def cleanup_expired_uploads(upload_dir: Path) -> None:
@@ -739,6 +800,7 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
             body = json.dumps(data).encode('utf-8')
             self.send_response(status)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -761,10 +823,11 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
             try:
                 body = get_frontend_html().encode('utf-8')
             except Exception as e:
-                body = f"<h1>ARGUS Frontend Loading Error</h1><pre>{e}</pre>".encode('utf-8')
+                body = f"<h1>ARGUS Frontend Loading Error</h1><pre>{html.escape(str(e))}</pre>".encode('utf-8')
             try:
                 self.send_response(HTTPStatus.OK)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('X-Content-Type-Options', 'nosniff')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -808,25 +871,44 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
+        origin = self.headers.get('Origin', '').strip()
+        if origin:
+            parsed_origin = urllib.parse.urlparse(origin)
+            host_header = self.headers.get('Host', '').strip()
+            if not parsed_origin.netloc or (host_header and parsed_origin.netloc.lower() != host_header.lower()):
+                self.send_json_response({"status": "error", "message": "Origin mismatch"}, status=HTTPStatus.FORBIDDEN)
+                return
+
         if path == '/api/analyze':
             content_type = self.headers.get('Content-Type', '')
 
             # Case A: Preset JSON request
             if 'application/json' in content_type:
-                content_length = int(self.headers.get('Content-Length', 0))
+                try:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                except (ValueError, TypeError):
+                    self.send_json_response({"status": "error", "message": "Invalid Content-Length header"}, status=400)
+                    return
                 if content_length <= 0 or content_length > 1024 * 1024:
                     self.send_json_response({"status": "error", "message": "Invalid JSON request size"}, status=413)
                     return
                 raw_body = self.rfile.read(content_length)
                 try:
                     payload = json.loads(raw_body.decode('utf-8'))
-                except Exception as e:
-                    self.send_json_response({"status": "error", "message": f"Malformed JSON: {e}"}, status=400)
+                except Exception:
+                    self.send_json_response({"status": "error", "message": "Malformed JSON payload"}, status=400)
                     return
 
                 preset_id = payload.get('preset_id', 'violence_691')
-                threshold = float(payload.get('threshold', 0.35))
-                frames = int(payload.get('frames', 24))
+                try:
+                    threshold = float(payload.get('threshold', 0.35))
+                    frames = int(payload.get('frames', 24))
+                except (ValueError, TypeError):
+                    self.send_json_response({"status": "error", "message": "Invalid frames or threshold"}, status=400)
+                    return
+                if not 1 <= frames <= MAX_ANALYSIS_FRAMES or not 0.0 <= threshold <= 1.0:
+                    self.send_json_response({"status": "error", "message": "Invalid frames or threshold"}, status=400)
+                    return
                 stream = bool(payload.get('stream', False))
 
                 # Return pre-cached result if available and using default parameters
@@ -851,15 +933,15 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 try:
                     res = process_video_inference(target_path, threshold=threshold, frames=frames, stream=stream)
                     self.send_json_response(res)
-                except Exception as e:
+                except Exception:
                     import traceback
                     traceback.print_exc()
-                    self.send_json_response({"status": "error", "message": str(e)}, status=500)
+                    self.send_json_response({"status": "error", "message": "Internal inference error"}, status=500)
                 return
 
             # Case B: Multipart file upload (Handles binary MP4/AVI/MOV up to 100MB)
             elif 'multipart/form-data' in content_type:
-                upload_dir = Path('outputs/web_uploads')
+                upload_dir = PROJECT_ROOT / 'outputs' / 'web_uploads'
                 upload_dir.mkdir(parents=True, exist_ok=True)
                 cleanup_expired_uploads(upload_dir)
 
@@ -868,9 +950,13 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 if not boundary_match:
                     self.send_json_response({"status": "error", "message": "No boundary in multipart header"}, status=400)
                     return
-                boundary = boundary_match.group(1).strip().encode('utf-8')
+                boundary = boundary_match.group(1).strip().strip('"').encode('utf-8')
 
-                content_length = int(self.headers.get('Content-Length', 0))
+                try:
+                    content_length = int(self.headers.get('Content-Length', 0))
+                except (ValueError, TypeError):
+                    self.send_json_response({"status": "error", "message": "Invalid Content-Length header"}, status=400)
+                    return
                 if content_length <= 0 or content_length > MAX_UPLOAD_BYTES:
                     self.send_json_response({"status": "error", "message": "Upload must be between 1 byte and 100 MB"}, status=413)
                     return
@@ -884,9 +970,13 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
 
                 filename = video_item.get('filename') or "uploaded_surveillance.mp4"
                 file_bytes = video_item.get('content', b'')
-                threshold = float(parsed_form.get('threshold', 0.35))
-                # For uploaded videos, default to 32 dense frames for high temporal resolution
-                frames = int(parsed_form.get('frames', 32))
+                try:
+                    threshold = float(parsed_form.get('threshold', 0.35))
+                    # For uploaded videos, default to 32 dense frames for high temporal resolution
+                    frames = int(parsed_form.get('frames', 32))
+                except (ValueError, TypeError):
+                    self.send_json_response({"status": "error", "message": "Invalid frames or threshold"}, status=400)
+                    return
                 suffix = Path(filename).suffix.lower()
                 if suffix not in ALLOWED_UPLOAD_EXTENSIONS:
                     self.send_json_response({"status": "error", "message": "Unsupported video file type"}, status=415)
@@ -907,10 +997,10 @@ class ARGUSWebHandler(BaseHTTPRequestHandler):
                 try:
                     res = process_video_inference(saved_path, threshold=threshold, frames=frames, stream=False)
                     self.send_json_response(res)
-                except Exception as e:
+                except Exception:
                     import traceback
                     traceback.print_exc()
-                    self.send_json_response({"status": "error", "message": f"Inference failed: {e}"}, status=500)
+                    self.send_json_response({"status": "error", "message": "Inference failed"}, status=500)
                 return
 
         try:
@@ -926,6 +1016,7 @@ def main():
     parser.add_argument('--checkpoint', type=Path, default=Path('outputs/checkpoints_rlvd_full/best.pt'), help='Model checkpoint.')
     parser.add_argument('--allow-random-model', action='store_true', help='Explicitly allow untrained random weights for development.')
     parser.add_argument('--allow-unsafe-checkpoint', action='store_true', help='Allow a trusted legacy pickle checkpoint.')
+    parser.add_argument('--open-browser', action='store_true', help='Open the web UI in the default browser once listening.')
     args = parser.parse_args()
 
     # Preload PyTorch model
@@ -942,6 +1033,8 @@ def main():
 
     server_address = (args.host, args.port)
     httpd = SafeThreadingHTTPServer(server_address, ARGUSWebHandler)
+    if args.open_browser:
+        webbrowser.open(f"http://127.0.0.1:{args.port}")
 
     print("\n" + "=" * 66)
     print("      [+]  ARGUS AUTONOMOUS SURVEILLANCE PLATFORM ONLINE  [+]      ")

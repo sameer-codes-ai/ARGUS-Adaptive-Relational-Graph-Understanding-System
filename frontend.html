@@ -962,7 +962,7 @@ footer a:hover {
       </svg>
       Research Paper
     </button>
-    <a class="hbtn" href="/outputs/dashboard_violence.html" target="_blank">
+    <a class="hbtn" href="/outputs/dashboard_violence.html" target="_blank" rel="noopener noreferrer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <line x1="18" y1="20" x2="18" y2="10"/>
         <line x1="12" y1="20" x2="12" y2="4"/>
@@ -1293,7 +1293,7 @@ footer a:hover {
 
 <footer>
 <div class="container">
-  <span>ARGUS &bull; Adaptive Relational Graph Understanding System &bull; Research &bull; <a href="https://github.com/sameer-codes-ai/ARGUS-Adaptive-Relational-Graph-Understanding-System" target="_blank">Repository</a></span>
+  <span>ARGUS &bull; Adaptive Relational Graph Understanding System &bull; Research &bull; <a href="https://github.com/sameer-codes-ai/ARGUS-Adaptive-Relational-Graph-Understanding-System" target="_blank" rel="noopener noreferrer">Repository</a></span>
 </div>
 </footer>
 
@@ -1322,7 +1322,7 @@ footer a:hover {
   
   <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px">
     <button class="hbtn" onclick="document.getElementById('paperModal').classList.remove('show')">Dismiss</button>
-    <a href="/docs/FinalPaper.md" target="_blank" class="hbtn" style="background:#3b82f6;color:#ffffff;border-color:#2563eb;font-weight:600">Open Full Paper</a>
+    <a href="/docs/FinalPaper.md" target="_blank" rel="noopener noreferrer" class="hbtn" style="background:#3b82f6;color:#ffffff;border-color:#2563eb;font-weight:600">Open Full Paper</a>
   </div>
 </div>
 </div>
@@ -1341,6 +1341,8 @@ let visionFps = 10;
 let activeThreshold = 0.35;
 let activePreset = 'violence_691';
 let chart = null;
+let activeAnalysisController = null;
+let analysisRequestSeq = 0;
 
 const PRESETS = %%PRESETS_JSON%%;
 const nativeVideo = document.getElementById('nativeVideo');
@@ -1425,21 +1427,35 @@ function handleFile(file) {
 }
 
 async function runAnalysis(payload, isFormData) {
+  if (activeAnalysisController) {
+    activeAnalysisController.abort();
+  }
+  const controller = new AbortController();
+  activeAnalysisController = controller;
+  const reqSeq = ++analysisRequestSeq;
+
   pauseAll();
   showLoading(true);
   try {
-    const opts = isFormData ? {method:'POST', body:payload} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)};
+    const opts = isFormData
+      ? {method:'POST', body:payload, signal:controller.signal}
+      : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:controller.signal};
     const res = await fetch('/api/analyze', opts);
     const data = await res.json();
+    if (reqSeq !== analysisRequestSeq) return;
     if (data.status === 'success') {
       applyData(data);
     } else {
       alert('Analysis error: ' + (data.message || 'Unknown'));
     }
   } catch(e) {
+    if (e && e.name === 'AbortError') return;
+    if (reqSeq !== analysisRequestSeq) return;
     alert('Connection error: ' + e.message);
   }
-  showLoading(false);
+  if (reqSeq === analysisRequestSeq) {
+    showLoading(false);
+  }
 }
 
 function applyData(d) {
@@ -1453,6 +1469,9 @@ function applyData(d) {
     nativeVideo.load();
     setPlayerMode('video');
   } else {
+    nativeVideo.pause();
+    nativeVideo.removeAttribute('src');
+    nativeVideo.load();
     setPlayerMode('vision');
   }
 
@@ -1470,7 +1489,7 @@ function applyData(d) {
   } else {
     document.getElementById('techEntities').textContent = d.num_entities + ' Entities';
   }
-  document.getElementById('techEdges').textContent = Math.max(1, Math.round(d.num_entities * 0.75)) + ' Pairs';
+  document.getElementById('techEdges').textContent = (d.num_entities > 0 ? Math.max(1, Math.round(d.num_entities * 0.75)) : 0) + ' Pairs';
   if (document.getElementById('techDetector')) {
     const isYolo = d.detector_implementation === 'yolo';
     document.getElementById('techDetector').textContent = isYolo ? 'YOLOv11 Semantic' : 'Heuristic Proposals';
@@ -1502,8 +1521,6 @@ function applyData(d) {
   scrubber.min = 0;
   scrubber.max = dur;
   scrubber.value = 0;
-
-  frames.forEach(f => { const im = new Image(); im.src = f.data_url; });
 
   if (playerMode === 'video' && d.video_url) {
     nativeVideo.play().catch(() => {});
@@ -1562,6 +1579,12 @@ function setThreshold(val) {
   if (currentData) {
     updateVerdict(currentData.peak_score, currentData.mean_score);
     if (chart && chart.data.datasets.length > 1) {
+      const isAnom = currentData.peak_score >= val;
+      const cColor = isAnom ? '#f43f5e' : '#10b981';
+      const cBg = isAnom ? 'rgba(244, 63, 94, 0.12)' : 'rgba(16, 185, 129, 0.12)';
+      chart.data.datasets[0].borderColor = cColor;
+      chart.data.datasets[0].backgroundColor = cBg;
+      chart.data.datasets[0].pointBackgroundColor = cColor;
       chart.data.datasets[1].data = Array(chart.data.labels.length).fill(val);
       chart.data.datasets[1].label = 'Threshold (' + val.toFixed(2) + ')';
       chart.update('none');
@@ -1574,14 +1597,15 @@ function setThreshold(val) {
 }
 
 function setPlayerMode(mode) {
-  playerMode = mode;
-  document.getElementById('btnModeVideo').classList.toggle('active', mode === 'video');
-  document.getElementById('btnModeVision').classList.toggle('active', mode === 'vision');
+  const canPlayVideo = mode === 'video' && Boolean(currentData && currentData.video_url);
+  playerMode = canPlayVideo ? 'video' : 'vision';
+  document.getElementById('btnModeVideo').classList.toggle('active', playerMode === 'video');
+  document.getElementById('btnModeVision').classList.toggle('active', playerMode === 'vision');
 
   const placeholder = document.getElementById('placeholder');
   const liveHud = document.getElementById('liveHud');
 
-  if (mode === 'video' && currentData && currentData.video_url) {
+  if (playerMode === 'video') {
     pauseVision();
     frameImg.style.display = 'none';
     nativeVideo.style.display = 'block';
@@ -1818,6 +1842,7 @@ function updateChartData() {
 }
 
 function initChart() {
+  if (typeof Chart === 'undefined') return;
   const ctx = document.getElementById('chartCanvas').getContext('2d');
   chart = new Chart(ctx, {
     type: 'line',

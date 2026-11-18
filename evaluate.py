@@ -92,9 +92,9 @@ def main():
     saved_cfg = dict(state.get('config', {}) or {}) if isinstance(state, dict) else {}
     if yaml_model_cfg:
         saved_cfg.update(yaml_model_cfg)
-    config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
     if args.image_size is not None:
-        config.image_size = args.image_size
+        saved_cfg['image_size'] = args.image_size
+    config = ARGUSConfig.from_dict(saved_cfg, strict=True) if saved_cfg else ARGUSConfig().validate()
 
     model_type = state.get('model_type') or state.get('components', {}).get('model_type', 'argus')
     model = build_model(model_type=model_type, config=config).to(device)
@@ -137,8 +137,12 @@ def main():
             b, t = frames.shape[:2]
             frames = frames.to(device)
 
+            if device == 'cuda':
+                torch.cuda.synchronize()
             step_start = time.perf_counter()
             out = model(frames)
+            if device == 'cuda':
+                torch.cuda.synchronize()
             step_elapsed = time.perf_counter() - step_start
 
             total_time += step_elapsed
