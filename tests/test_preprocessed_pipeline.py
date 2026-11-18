@@ -2,7 +2,7 @@
 Unit and Integration Tests for ARGUS Preprocessed Dataset Pipelines (RLVD and UCF-Crime).
 
 Validates:
-1. RLVD preprocessed .pt files (exact count, shapes, value range [0, 1], finite checks).
+1. RLVD preprocessed .pt files (exact count, shapes, uint8 [0, 255] value range, finite checks).
 2. Manifest integrity (train_clean.csv, val_clean.csv, test_clean.csv, 0% leakage, .pt resolution).
 3. UCF-Crime test set preprocessed index (ucf_test_index.json, 290 videos, frame counts, annotations).
 4. VideoManifest and load_clip_from_path compatibility with atomic .pt files.

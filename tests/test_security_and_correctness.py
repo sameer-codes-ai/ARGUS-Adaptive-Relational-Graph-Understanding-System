@@ -8,6 +8,8 @@ import web_demo
 from argus import ARGUS, ARGUSConfig, AlertDispatcher, anomaly_loss, binary_metrics
 from argus.data import VideoManifest
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def test_static_path_traversal_is_rejected():
     assert web_demo.resolve_static_path('/demo_samples/../.git/config') is None
@@ -15,9 +17,27 @@ def test_static_path_traversal_is_rejected():
 
 
 def test_static_path_inside_allowed_root_is_accepted():
-    sample = Path('demo_samples/sample_normal_NV344.mp4')
-    if sample.exists():
-        assert web_demo.resolve_static_path('/demo_samples/sample_normal_NV344.mp4') == sample.resolve()
+    sample = PROJECT_ROOT / 'demo_samples' / 'sample_normal_NV344.mp4'
+    assert sample.exists(), f"Expected demo sample at {sample}"
+    assert web_demo.resolve_static_path('/demo_samples/sample_normal_NV344.mp4') == sample.resolve()
+
+
+def test_static_path_sensitive_checkpoint_is_rejected():
+    assert web_demo.resolve_static_path('/outputs/checkpoints_joint/best.pt') is None
+    outputs_dir = PROJECT_ROOT / 'outputs'
+    created_dir = not outputs_dir.exists()
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    tmp_ckpt = outputs_dir / '_test_sensitive_ckpt.pt'
+    tmp_ckpt.write_bytes(b'dummy-checkpoint')
+    try:
+        assert web_demo.resolve_static_path('/outputs/_test_sensitive_ckpt.pt') is None
+    finally:
+        tmp_ckpt.unlink(missing_ok=True)
+        if created_dir:
+            try:
+                outputs_dir.rmdir()
+            except OSError:
+                pass
 
 
 def test_unknown_model_configuration_is_rejected():

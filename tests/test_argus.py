@@ -20,6 +20,19 @@ from argus import (
 )
 
 
+def _lightweight_config() -> ARGUSConfig:
+    return ARGUSConfig(
+        image_size=64,
+        patch_size=16,
+        dim=64,
+        graph_dim=32,
+        temporal_layers=1,
+        heads=4,
+        use_pretrained_backbone=False,
+        detector_name="heuristic",
+    )
+
+
 def test_sampler_keeps_temporal_coverage():
     clip = torch.zeros(1, 12, 3, 32, 32)
     picked, scores = AdaptiveSampler(threshold=99, max_gap=3).select(clip)
@@ -28,8 +41,8 @@ def test_sampler_keeps_temporal_coverage():
 
 
 def test_end_to_end_forward_and_loss():
-    model = ARGUS()
-    out = model(torch.rand(2, 8, 3, 96, 96))
+    model = ARGUS(_lightweight_config())
+    out = model(torch.rand(2, 8, 3, 64, 64))
     assert out.scores.shape[0] == 2 and out.scores.ndim == 2
     assert len(out.sampled_indices) == 2
     assert len(out.boxes) == 2
@@ -48,9 +61,9 @@ def test_mil_ranking_loss():
 
 
 def test_streaming_memory_is_bounded():
-    model = ARGUS()
-    model(torch.rand(1, 8, 3, 96, 96), stream=True)
-    model(torch.rand(1, 8, 3, 96, 96), stream=True)
+    model = ARGUS(_lightweight_config())
+    model(torch.rand(1, 8, 3, 64, 64), stream=True)
+    model(torch.rand(1, 8, 3, 64, 64), stream=True)
     assert model.memory.bank is not None
     assert model.memory.bank.shape[1] <= model.cfg.memory_size
 
@@ -150,7 +163,7 @@ def test_outer_layer_end_to_end_forward():
 
 
 def test_explainability_and_alerts(tmp_path):
-    model = ARGUS()
+    model = ARGUS(_lightweight_config())
     engine = ExplainabilityEngine(model)
     clip = torch.rand(1, 4, 3, 64, 64)
     res = engine.compute_node_attribution(clip)

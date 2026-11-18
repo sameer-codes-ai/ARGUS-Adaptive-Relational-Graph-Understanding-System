@@ -23,6 +23,8 @@ from argus.model import ARGUSOutput
 from argus.modules import TemporalEncoder
 from argus.detector import DetectionResult
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 # ── BUG-1: Duplicate Detector Invocation ─────────────────────────────────
 def test_fix_1_detector_called_once_per_frame():
@@ -257,7 +259,7 @@ def test_fix_10_atomic_history_write(tmp_path):
 # ── BUG-11: Train Joint YAML Config Deduplication ────────────────────────
 def test_fix_11_train_joint_yaml_no_duplicate_unfreeze():
     """Verify train_joint.yaml does not have redundant unfreeze_backbone in training block."""
-    cfg_path = Path("configs/train_joint.yaml")
+    cfg_path = PROJECT_ROOT / "configs" / "train_joint.yaml"
     with open(cfg_path, 'r', encoding='utf-8') as f:
         data = yaml.safe_load(f)
 
@@ -268,11 +270,11 @@ def test_fix_11_train_joint_yaml_no_duplicate_unfreeze():
 # ── BUG-12: ARGUSOutput Type Hints ───────────────────────────────────────
 def test_fix_12_argus_output_type_hints():
     """Verify ARGUSOutput annotations match the actual List[List[Tensor]] structure."""
-    import typing
-    hints = typing.get_type_hints(ARGUSOutput)
-    # saliency and node_importance should be Optional[List[List[torch.Tensor]]]
-    assert "saliency" in hints
-    assert "node_importance" in hints
+    from typing import List, Optional, get_type_hints
+    hints = get_type_hints(ARGUSOutput)
+    expected = Optional[List[List[torch.Tensor]]]
+    assert hints["saliency"] == expected
+    assert hints["node_importance"] == expected
 
 
 # ── BUG-13: Vectorized Fallback Semantic Tagging ──────────────────────────
@@ -351,13 +353,17 @@ def test_fix_17_execution_order_cli_compatibility(monkeypatch):
     assert auc_args.config == Path("configs/ablations/ablation_4_no_pruning.yaml")
 
     monkeypatch.setattr(sys, "argv", ["generate_pareto_plots.py", "--compile-from", "outputs", "--output", "figures/pareto_analysis.png"])
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--metrics-json", type=Path, default=None)
-    parser.add_argument("--compile-from", type=Path, default=None)
-    parser.add_argument("--output", type=Path, default=Path("figures/pareto_analysis.png"))
-    p_args = parser.parse_args()
-    assert p_args.compile_from == Path("outputs")
+    if hasattr(generate_pareto_plots, "parse_args"):
+        p_args = generate_pareto_plots.parse_args()
+        assert p_args.compile_from == Path("outputs")
+        assert p_args.output == Path("figures/pareto_analysis.png")
+    else:
+        captured = {}
+        monkeypatch.setattr(generate_pareto_plots, "compile_pareto_metrics", lambda d: captured.setdefault("compile_from", d) or Path("dummy.json"))
+        monkeypatch.setattr(generate_pareto_plots, "generate_pareto_plots", lambda out, m: captured.update({"output": out, "metrics": m}))
+        generate_pareto_plots.main()
+        assert captured["compile_from"] == Path("outputs")
+        assert captured["output"] == Path("figures/pareto_analysis.png")
 
 
 # ── BUG-18: Multi-Seed UCF Metric Schema Extraction ───────────────────────
@@ -496,6 +502,79 @@ def test_fix_23_audit_splits_detects_leakage(tmp_path):
     audit_splits(ctx, tmp_path)
     assert len(ctx.failures) > 0
     assert any("DATA LEAKAGE DETECTED" in f for f in ctx.failures)
+
+
+# ── Phase 2 Regression Tests ─────────────────────────────────────────────
+def test_fix_24_edge_gat_empty_edges_with_edge_attrs():
+    """Verify EdgeGAT handles 0 edges cleanly when use_edge_attrs=True."""
+    from argus.graph import EdgeGAT
+
+    gat = EdgeGAT(in_dim=12, edge_dim=10, out_dim=32, heads=4, use_edge_attrs=True)
+    x = torch.randn(3, 12)
+    edges = (torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long))
+    edge_attr = torch.empty(0, 10)
+    out = gat(x, edges, edge_attr)
+    assert out.shape == (3, 32)
+    assert torch.isfinite(out).all()
+
+
+def test_fix_25_adaptive_sampler_fp16_no_nan():
+    """Verify AdaptiveSampler.importance_scores avoids float16 overflow at 256x256."""
+    sampler = AdaptiveSampler()
+    frames = torch.rand(1, 4, 3, 256, 256, dtype=torch.float16)
+    scores = sampler.importance_scores(frames)
+    assert scores.shape == (1, 4)
+    assert torch.isfinite(scores).all()
+
+
+def test_fix_26_roi_extractor_fp16():
+    """Verify RoIFeatureExtractor handles float16 feature maps without dtype mismatch."""
+    from argus.detector import RoIFeatureExtractor
+
+    roi = RoIFeatureExtractor(in_channels=16, out_dim=8).to(dtype=torch.float16)
+    feat_map = torch.randn(16, 12, 12, dtype=torch.float16)
+    boxes = torch.tensor([[0.1, 0.1, 0.5, 0.5], [0.2, 0.2, 0.8, 0.8]], dtype=torch.float32)
+    out = roi(feat_map, boxes)
+    assert out.shape == (2, 8)
+    assert torch.isfinite(out).all()
+
+    empty_out = roi(feat_map, torch.empty(0, 4, dtype=torch.float32))
+    assert empty_out.shape == (0, 8)
+    assert empty_out.dtype == torch.float16
+
+
+def test_fix_27_validate_component_metadata_none_fields():
+    """Verify validate_component_metadata tolerates None config and components."""
+    from argus.checkpoint import validate_component_metadata
+
+    model = ARGUS(ARGUSConfig(image_size=64, dim=64, graph_dim=32, temporal_layers=1, heads=4))
+    validate_component_metadata({"config": None, "components": None}, model, allow_partial=True)
+
+
+def test_fix_28_alert_dispatcher_negative_edge_and_html_escape(tmp_path):
+    """Verify AlertDispatcher ignores negative edge indices and generate_dashboard_html escapes HTML."""
+    from dataclasses import replace
+    from argus.alerts import AlertDispatcher, generate_dashboard_html
+
+    dispatcher = AlertDispatcher(threshold=0.5)
+    event = dispatcher.dispatch(
+        video_source="cam_01.mp4",
+        timeline_scores=[0.9],
+        keyframe_indices=[0],
+        semantic_types_per_frame=[[0, 3]],
+        edge_indices_per_frame=[[(-1, 0)]],
+        detector_impl="yolo",
+    )
+    assert event is not None
+    assert event.num_person_interactions == 0
+    assert event.person_weapon_edges == 0
+
+    xss_event = replace(event, evidence_details=['<script>alert("xss")</script>'])
+    dash_path = tmp_path / "dash_xss.html"
+    generate_dashboard_html(xss_event, dash_path)
+    html_text = dash_path.read_text(encoding="utf-8")
+    assert '<script>alert("xss")</script>' not in html_text
+    assert "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;" in html_text
 
 
 
